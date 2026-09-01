@@ -3,10 +3,14 @@
 Terraform and Python backing the Instruqt track **Blocking Generative AI with
 NIOS Response Policy Zones**.
 
-This repository is cloned into the Instruqt shell container at track start by
+Published at **<https://github.com/zmiszkiewicz/nios-rpz-lab>** and cloned
+anonymously into the Instruqt shell container at track start by
 `track_scripts/setup-shell`. It deploys a vNIOS Grid Master and a Windows
 desktop into an AWS sandbox, and provides the WAPI tooling the challenge checks
 use to verify the participant's work.
+
+To point a track at a fork or a branch without editing `setup-shell`, set
+`LAB_REPO_URL` or `LAB_REPO_REF` in the environment.
 
 ---
 
@@ -79,7 +83,6 @@ Everything has a default except the three below. See
 
 | Placeholder | Where | Why it needs confirming |
 |---|---|---|
-| `LAB_REPO_URL` | `track_scripts/setup-shell` | Currently `https://github.com/zmiszkiewicz/nios-rpz-lab.git`. Point it at wherever this repo is actually published. |
 | `NIOS_AMI_ID` | Instruqt secret | Region- and account-specific. |
 | `nios_temp_license` | `terraform/variables.tf` | The `rpz` token must actually grant DNS Firewall on your build. |
 | `LAB_DNS_ZONE` | `scripts/setup_dns.py`, `track_scripts/setup-rdpclient` | Defaults to `iracictechguru.com`, matching the other labs. |
