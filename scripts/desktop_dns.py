@@ -26,27 +26,89 @@ log = get_logger("desktop_dns")
 
 DOMAIN_RE = re.compile(r"^[A-Za-z0-9_*][A-Za-z0-9._*-]{0,252}[A-Za-z0-9]$")
 
-# PowerShell run on the desktop. Resolve-DnsName writes an error and returns
-# nothing on NXDOMAIN, so an empty address list is what "blocked" looks like.
+# PowerShell run on the desktop.
+#
+# "No addresses returned" is not one condition, it is four, and telling them
+# apart is the whole point of this script:
+#
+#   NXDOMAIN  the RPZ matched and refused the name — the lab working
+#   REFUSED   the server answered but will not recurse for us
+#   TIMEOUT   nothing is listening, or the packets are not arriving
+#   SERVFAIL  the server tried and failed
+#
+# An earlier version reported all four as "BLOCKED", which made a dead resolver
+# look like a successful policy. The TCP probe on 53 runs first so we can say
+# "nothing is listening" without inferring it from a lookup failure.
 PS_TEMPLATE = """
 $ErrorActionPreference = "SilentlyContinue"
 Clear-DnsClientCache
 $server = "__SERVER__"
+
+$listening = $false
+try {
+    $listening = (Test-NetConnection -ComputerName $server -Port 53 `
+                    -InformationLevel Quiet -WarningAction SilentlyContinue)
+} catch {
+    $listening = $false
+}
+
+$configured = @()
+try {
+    $configured = @(Get-DnsClientServerAddress -AddressFamily IPv4 |
+                    Where-Object { $_.ServerAddresses } |
+                    ForEach-Object { $_.ServerAddresses } | Select-Object -Unique)
+} catch {
+    $configured = @()
+}
+
 $results = @()
 foreach ($d in @(__DOMAINS__)) {
+    $err = $null
     $addresses = @()
-    $answer = Resolve-DnsName -Name $d -Type A -Server $server -DnsOnly -ErrorAction SilentlyContinue
+    $answer = Resolve-DnsName -Name $d -Type A -Server $server -DnsOnly `
+                -ErrorAction SilentlyContinue -ErrorVariable err
     if ($answer) {
         $addresses = @($answer | Where-Object { $_.IPAddress } | ForEach-Object { $_.IPAddress })
+    }
+    $msg = ""
+    if ($err -and $err.Count -gt 0) {
+        $msg = $err[0].Exception.Message
+        if (-not $msg) { $msg = $err[0].ToString() }
     }
     $results += [pscustomobject]@{
         domain    = $d
         resolved  = ($addresses.Count -gt 0)
         addresses = $addresses
+        error     = $msg
     }
 }
-ConvertTo-Json -InputObject @($results) -Compress -Depth 4
+
+ConvertTo-Json -Compress -Depth 5 -InputObject ([pscustomobject]@{
+    server            = $server
+    port53_listening  = $listening
+    configured_dns    = @($configured)
+    results           = @($results)
+})
 """
+
+# Windows phrases these differently across builds, so match on substrings.
+_STATUS_PATTERNS = (
+    ("NXDOMAIN", ("does not exist", "name does not exist", "nxdomain")),
+    ("TIMEOUT", ("timed out", "timeout", "no response from server")),
+    ("REFUSED", ("refused",)),
+    ("SERVFAIL", ("server failure", "servfail", "unreachable")),
+)
+
+
+def classify(entry):
+    """Turn a raw lookup result into one of the statuses above."""
+    if entry.get("resolved"):
+        return "RESOLVED"
+    error = (entry.get("error") or "").lower()
+    for status, needles in _STATUS_PATTERNS:
+        if any(needle in error for needle in needles):
+            return status
+    return "NO_ANSWER"
 
 
 class DesktopUnreachable(RuntimeError):
@@ -67,11 +129,17 @@ def _build_script(domains, server):
     return PS_TEMPLATE.replace("__DOMAINS__", quoted).replace("__SERVER__", server)
 
 
-def resolve_on_desktop(domains, server=None, host=None, password=None, timeout=90):
+def probe_desktop(domains, server=None, host=None, password=None, timeout=90):
     """
     Resolve each domain from the desktop against the Grid Master.
 
-    Returns {domain: {"resolved": bool, "addresses": [str, ...]}}.
+    Returns:
+        {
+          "server":           the resolver that was queried,
+          "port53_listening": bool — TCP 53 reachable from the desktop,
+          "configured_dns":   [str, ...] — the desktop's own resolver list,
+          "results": {domain: {"resolved", "addresses", "error", "status"}},
+        }
     """
     try:
         import winrm  # imported lazily so --help works without pywinrm
@@ -125,16 +193,68 @@ def resolve_on_desktop(domains, server=None, host=None, password=None, timeout=9
             f"Could not parse the desktop's lookup output: {stdout[:300]}"
         ) from exc
 
-    if isinstance(payload, dict):  # single result comes back unwrapped
-        payload = [payload]
+    entries = payload.get("results") or []
+    if isinstance(entries, dict):  # a single result comes back unwrapped
+        entries = [entries]
 
-    return {
-        entry["domain"]: {
+    results = {}
+    for entry in entries:
+        results[entry["domain"]] = {
             "resolved": bool(entry.get("resolved")),
             "addresses": list(entry.get("addresses") or []),
+            "error": entry.get("error") or "",
+            "status": classify(entry),
         }
-        for entry in payload
+
+    configured = payload.get("configured_dns") or []
+    if isinstance(configured, str):
+        configured = [configured]
+
+    return {
+        "server": payload.get("server") or server,
+        "port53_listening": bool(payload.get("port53_listening")),
+        "configured_dns": list(configured),
+        "results": results,
     }
+
+
+def resolve_on_desktop(domains, server=None, host=None, password=None, timeout=90):
+    """
+    Per-domain results only, for callers that do not need the resolver metadata.
+
+    Returns {domain: {"resolved", "addresses", "error", "status"}}.
+    """
+    return probe_desktop(domains, server=server, host=host,
+                         password=password, timeout=timeout)["results"]
+
+
+def explain_failure(probe):
+    """
+    One sentence naming the most likely cause when nothing resolves.
+
+    Returns None if resolution is working, so callers can use it as a guard.
+    """
+    results = probe.get("results") or {}
+    if any(r["resolved"] for r in results.values()):
+        return None
+
+    statuses = {r["status"] for r in results.values()}
+    server = probe.get("server")
+
+    if not probe.get("port53_listening"):
+        return (f"Nothing is listening on {server}:53. The DNS service is not running "
+                f"on the Grid Master — start it under Data Management > DNS > Members.")
+    if statuses == {"TIMEOUT"}:
+        return (f"{server} accepted a TCP connection on 53 but did not answer any "
+                f"query. The DNS service is starting, or is not listening on this "
+                f"interface.")
+    if "REFUSED" in statuses:
+        return (f"{server} refused the queries. Recursion is disabled, or the lab "
+                f"subnet is not in the allow_recursion ACL.")
+    if "SERVFAIL" in statuses:
+        return (f"{server} returned SERVFAIL. It is recursing but cannot reach the "
+                f"upstream root servers — check the Grid Master's egress and gateway.")
+    return None
 
 
 def wait_for_desktop(host=None, password=None, timeout=600, interval=20):
@@ -162,25 +282,54 @@ def wait_for_desktop(host=None, password=None, timeout=600, interval=20):
     )
 
 
+_STATUS_LABEL = {
+    "RESOLVED": "RESOLVED",
+    "NXDOMAIN": "BLOCKED",    # the RPZ did its job
+    "REFUSED":  "REFUSED",
+    "TIMEOUT":  "TIMEOUT",
+    "SERVFAIL": "SERVFAIL",
+    "NO_ANSWER": "NO ANSWER",
+}
+
+
 def main():
-    args = [a for a in sys.argv[1:] if a != "--json"]
-    as_json = "--json" in sys.argv[1:]
+    flags = {a for a in sys.argv[1:] if a.startswith("--")}
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    as_json = "--json" in flags
+
+    # --probe answers "is the resolver alive and is it mine?" without caring
+    # about any particular domain. Used by challenge 1, before recursion exists.
+    if "--probe" in flags and not args:
+        args = ["www.infoblox.com"]
 
     if not args:
         print(__doc__)
         return 2
 
-    results = resolve_on_desktop(args)
+    probe = probe_desktop(args)
 
     if as_json:
-        print(json.dumps(results, indent=2))
+        print(json.dumps(probe, indent=2))
         return 0
 
-    for domain, result in results.items():
-        if result["resolved"]:
-            print(f"  RESOLVED  {domain:32s} {', '.join(result['addresses'])}")
-        else:
-            print(f"  BLOCKED   {domain:32s} (no answer / NXDOMAIN)")
+    server = probe["server"]
+    configured = probe["configured_dns"]
+
+    print(f"  Desktop resolver : {', '.join(configured) or 'none configured'}")
+    print(f"  Querying         : {server}")
+    print(f"  TCP {server}:53   : {'listening' if probe['port53_listening'] else 'NOT LISTENING'}")
+    print()
+
+    for domain, result in probe["results"].items():
+        label = _STATUS_LABEL.get(result["status"], result["status"])
+        detail = ", ".join(result["addresses"]) if result["resolved"] else result["error"]
+        print(f"  {label:10s} {domain:32s} {detail[:70]}")
+
+    reason = explain_failure(probe)
+    if reason:
+        print()
+        print(f"  ! {reason}")
+        return 1
     return 0
 
 

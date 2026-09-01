@@ -25,7 +25,7 @@ import os
 import sys
 
 import domains as D
-from desktop_dns import DesktopUnreachable, resolve_on_desktop
+from desktop_dns import DesktopUnreachable, explain_failure, probe_desktop
 from nios_wapi import (NiosWapi, WapiError, WapiUnreachable, clear_reason, fail,
                        get_logger)
 
@@ -183,15 +183,24 @@ def check_block(sample=None):
     targets = sample + [D.CONTROL_DOMAIN]
 
     try:
-        results = resolve_on_desktop(targets)
+        probe = probe_desktop(targets)
     except DesktopUnreachable as exc:
         fail(f"Could not run the lookup on the Windows desktop: {exc}")
+
+    results = probe["results"]
+
+    # A dead resolver fails every lookup, which looks exactly like a perfect
+    # block until you ask why. Name the real cause before judging the policy.
+    reason = explain_failure(probe)
+    if reason:
+        fail(reason)
 
     control = results.get(D.CONTROL_DOMAIN, {})
     if not control.get("resolved"):
         fail(f"The control domain {D.CONTROL_DOMAIN} does not resolve from the "
-             f"desktop either, so this is not a policy block — DNS itself is broken. "
-             f"Check that recursion is enabled and that the DNS service is running.")
+             f"desktop either ({control.get('status', 'no answer')}), so this is not "
+             f"a policy block — resolution itself is broken. Check that recursion is "
+             f"enabled and that the DNS service is running.")
 
     log.info("PASS  Control domain %s still resolves (%s)",
              D.CONTROL_DOMAIN, ", ".join(control.get("addresses", [])))
@@ -204,8 +213,19 @@ def check_block(sample=None):
              f"check the rule action is Block (No Such Domain) and that DNS has been "
              f"restarted.")
 
+    # Blocked must mean NXDOMAIN. A timeout or a REFUSED is a broken resolver
+    # wearing the costume of a working policy, and must not pass.
+    wrong_status = {d: results[d]["status"] for d in sample
+                    if results.get(d, {}).get("status") not in ("NXDOMAIN", "NO_ANSWER")}
+    if wrong_status:
+        detail = ", ".join(f"{d} -> {s}" for d, s in wrong_status.items())
+        fail(f"Those domains are not resolving, but not because of the RPZ: {detail}. "
+             f"A Block (No Such Domain) rule produces NXDOMAIN; a timeout or refusal "
+             f"means the Grid Master is not answering properly.")
+
     for domain in sample:
-        log.info("PASS  %s is blocked from the desktop", domain)
+        log.info("PASS  %s is blocked from the desktop (%s)",
+                 domain, results[domain]["status"])
     return True
 
 
@@ -315,9 +335,15 @@ def check_passthru(wapi, domain=None):
     # A passthru that leaves every other AI domain reachable is not a policy.
     others = [d for d in SAMPLE_BLOCKED if d != domain][:2]
     try:
-        results = resolve_on_desktop([domain] + others + [D.CONTROL_DOMAIN])
+        probe = probe_desktop([domain] + others + [D.CONTROL_DOMAIN])
     except DesktopUnreachable as exc:
         fail(f"Could not run the lookup on the Windows desktop: {exc}")
+
+    reason = explain_failure(probe)
+    if reason:
+        fail(reason)
+
+    results = probe["results"]
 
     if not results.get(domain, {}).get("resolved"):
         fail(f"{domain} is configured as Passthru but still does not resolve from the "
