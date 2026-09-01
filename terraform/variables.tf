@@ -115,10 +115,11 @@ variable "nios_instance_type" {
 
 variable "nios_temp_license" {
   description = <<-EOT
-    NIOS temporary licence tokens for the #infoblox-config user_data. The `rpz`
-    token grants DNS Firewall; without it the Response Policy Zone cannot be
-    created and the lab has no content. Verify on first deploy — see the
-    Troubleshooting section of the README.
+    NIOS temporary licence tokens for the #infoblox-config user_data.
+
+    The `rpz` token grants DNS Firewall, which is what a Response Policy Zone
+    needs. The other NIOS labs here stop at `cloud` because none of them use
+    RPZ; temporary licensing covers it either way.
   EOT
   type        = string
   default     = "nios IB-V825 enterprise dns dhcp cloud rpz"

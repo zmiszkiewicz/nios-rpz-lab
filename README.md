@@ -39,8 +39,8 @@ Nothing about the RPZ itself is created by Terraform. Building it is the lab.
   aws ec2 describe-images --region eu-central-1 --owners <infoblox-account-id> \
     --filters "Name=name,Values=*nios*" --query 'Images[].[ImageId,Name]' --output table
   ```
-- A **DNS Firewall (RPZ) entitlement** on the NIOS build. See
-  [Troubleshooting](#the-rpz-licence-the-one-thing-to-verify-first).
+- A **DNS Firewall (RPZ) entitlement**, granted by the `rpz` token in
+  `nios_temp_license`. See [Troubleshooting](#the-rpz-licence).
 - A Route 53 hosted zone in a second, long-lived AWS account for the
   per-participant public names. This mirrors the `DEMO_*` split every other lab
   here uses: lab resources go in the throwaway sandbox, public DNS lives
@@ -88,7 +88,7 @@ Everything has a default except the two passwords. See
 | Value | Where | Why it needs confirming |
 |---|---|---|
 | `nios_ami_id` | `terraform/variables.tf` | Defaults to the vNIOS Grid Master image `tech-summit-security-niosx` uses in eu-central-1. Confirm it is still shared with your account and has not been rotated. |
-| `nios_temp_license` | `terraform/variables.tf` | The `rpz` token must actually grant DNS Firewall on your build. |
+| `nios_temp_license` | `terraform/variables.tf` | Carries the `rpz` token for DNS Firewall. Worth a `show license` on the first boot, as with any new licence combination. |
 | `LAB_DNS_ZONE` | `scripts/setup_dns.py`, `track_scripts/setup-rdpclient` | Defaults to `iracictechguru.com`, matching the other labs. |
 | AWS region | `terraform/variables.tf` | Defaults to `eu-central-1`; the AMI is region-specific and must exist there. |
 
@@ -199,47 +199,34 @@ Still open by design, and worth knowing about:
 
 ## Troubleshooting
 
-### The RPZ licence: the one thing to verify first
+### The RPZ licence
 
-**Symptom:** `configure_rpz.py zone` fails, or the Response Policy Zones menu is
-absent in Grid Manager.
-
-A local RPZ needs a **DNS Firewall** entitlement. The `temp_license` line every
-existing NIOS lab in this organisation uses is:
-
-```
-nios IB-V825 enterprise dns dhcp cloud
-```
-
-That contains no RPZ token, so it was extended here to:
+A local RPZ needs a **DNS Firewall** entitlement, which NIOS licenses under the
+name **RPZ**. Temporary licensing covers it, so the `temp_license` line carries
+the token alongside the others:
 
 ```
 nios IB-V825 enterprise dns dhcp cloud rpz
 ```
 
-**This is the highest-risk unverified assumption in the build.** A survey of
-every `temp_license` line, `licenses` array and `hwtype` across
-`tech-summit-security-niosx`, `instruqt-aws-dc-lab-full`, `tech-summit-vai-live`
-and `app-migration-niosx` turns up no RPZ or DNS Firewall token anywhere, so the
-exact spelling has never been proven against a real boot here. On the first
-deploy:
+The other NIOS labs in this organisation stop at `cloud` because none of them
+needed DNS Firewall — that is why the token is not visible elsewhere in the
+estate, not a sign that it is unavailable.
+
+**Symptom:** `configure_rpz.py zone` fails, or the Response Policy Zones menu is
+absent in Grid Manager. Confirm the entitlement landed:
 
 ```bash
 ssh admin@<gm-ip>          # password is nios_admin_password
 show license
 ```
 
-Confirm a DNS Firewall or RPZ entitlement is listed. If it is not:
-
-1. Try alternative tokens by changing `nios_temp_license` in
-   `terraform.tfvars` — no code change is needed, it is a plain string.
-2. Try the larger model. Two are in use across the other labs: **IB-V825**
-   (tech-summit-security-niosx, instruqt-aws-dc-lab-full) and **IB-V926**
-   (app-migration-niosx). If IB-V825 will not carry DNS Firewall, IB-V926 is
-   the next thing to try — bump `nios_instance_type` with it.
-3. If temporary licensing will not grant it at all, stage a licence file into
-   the AMI instead. That changes the AMI prerequisite, so flag it to whoever
-   owns the image.
+If RPZ is not listed, `nios_temp_license` is a plain string variable, so
+adjusting it needs no code change — set it in `terraform.tfvars` or export
+`TF_VAR_nios_temp_license`. Two models are in use across the other labs if you
+also need to change that: **IB-V825** (tech-summit-security-niosx,
+instruqt-aws-dc-lab-full) and **IB-V926** (app-migration-niosx); bump
+`nios_instance_type` alongside it.
 
 ### The Grid Master never answers WAPI
 

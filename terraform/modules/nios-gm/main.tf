@@ -42,10 +42,10 @@ resource "aws_instance" "gm" {
     device_index         = 1
   }
 
-  # NIOS reads this cloud-init dialect at first boot. The temp_license line is
-  # the one that matters for this lab: without a DNS Firewall (RPZ) entitlement
-  # the participant cannot create a Response Policy Zone at all. See
-  # var.temp_license.
+  # NIOS reads this cloud-init dialect at first boot. Note the `rpz` token in
+  # temp_license — that is the DNS Firewall entitlement the Response Policy Zone
+  # needs, and it is the one difference from the licence line the other NIOS
+  # labs here use.
   user_data = <<-EOF
 #infoblox-config
 temp_license: ${var.temp_license}
