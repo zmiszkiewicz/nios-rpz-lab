@@ -110,6 +110,7 @@ terraform/
 scripts/
   nios_wapi.py                WAPI client: version probe, verbs, restart, readiness
   domains.py                  the blocked domain sets and RPZ object names
+  bootstrap_nios.py           setup-time groundwork: DNS on, recursion, forwarders
   configure_rpz.py            idempotent configuration CLI
   verify_rpz.py               per-challenge verification, drives the check scripts
   desktop_dns.py              runs DNS lookups on the desktop over WinRM
@@ -137,6 +138,7 @@ export TF_VAR_windows_admin_password='...'
 
 cd ../scripts
 python3 wait_for_nios.py          # six to ten minutes
+python3 bootstrap_nios.py         # DNS on, recursion scoped, forwarders set
 python3 configure_rpz.py all      # build the whole policy in one go
 python3 verify_rpz.py --stage all # smoke-test it
 ```
@@ -168,7 +170,8 @@ Track=nios-rpz-genai-block  Participant=<instruqt participant id>
 | vNIOS boot, licence, Grid Manager up | 6–10 min |
 | Windows boot and bootstrap | 4–5 min |
 | **Setup total** (waits run in parallel) | **~12 min** |
-| Participant, six challenges | ~45 min |
+| Grid Master bootstrap (DNS, recursion, forwarders) | <1 min |
+| Participant, five challenges | ~40 min |
 | `terraform destroy` | 3–4 min |
 
 Setup runs while the participant reads challenge 1, so the lab fits inside an

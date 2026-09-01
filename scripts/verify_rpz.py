@@ -46,6 +46,52 @@ MIN_EXPECTED_RULES = len(D.GENAI_DOMAINS) * 2
 # Stage 1 — DNS service
 # --------------------------------------------------------------------------- #
 
+def check_baseline(wapi):
+    """
+    Challenge 1: the groundwork is in place and the participant has looked at it.
+
+    Not a test of the participant's configuration — bootstrap_nios.py does that
+    work at setup. It is a readiness gate: if the Grid Master is not resolving,
+    every later challenge produces a misleading result, so it is worth catching
+    here with a message that says so.
+    """
+    check_dns_service(wapi)
+    check_recursion(wapi, LAB_SUBNET_CIDR)
+
+    try:
+        probe = probe_desktop([D.CONTROL_DOMAIN, "claude.ai"])
+    except DesktopUnreachable as exc:
+        fail(f"Could not reach the Windows desktop to test resolution: {exc}")
+
+    reason = explain_failure(probe)
+    if reason:
+        fail(reason)
+
+    control = probe["results"].get(D.CONTROL_DOMAIN, {})
+    if not control.get("resolved"):
+        fail(f"The Grid Master is running but {D.CONTROL_DOMAIN} does not resolve "
+             f"from the desktop ({control.get('status')}). Resolution has to work "
+             f"before an RPZ can demonstrate anything. Run "
+             f"'python3 bootstrap_nios.py' from the Terminal tab to repair it.")
+
+    log.info("PASS  %s resolves from the desktop (%s)",
+             D.CONTROL_DOMAIN, ", ".join(control.get("addresses", [])))
+
+    configured = probe.get("configured_dns") or []
+    log.info("PASS  Desktop resolver is %s", ", ".join(configured) or "unset")
+
+    # Informational only. If the participant has already built the RPZ and come
+    # back to re-run this check, claude.ai being blocked is correct, not a fault.
+    ai = probe["results"].get("claude.ai", {})
+    if ai.get("resolved"):
+        log.info("NOTE  claude.ai currently resolves (%s) — the 'before' state",
+                 ", ".join(ai.get("addresses", [])))
+    else:
+        log.info("NOTE  claude.ai is already blocked (%s) — policy is in place",
+                 ai.get("status"))
+    return True
+
+
 def check_dns_service(wapi):
     members = wapi.members_dns()
     if not members:
@@ -368,7 +414,8 @@ def check_passthru(wapi, domain=None):
 # Entry point
 # --------------------------------------------------------------------------- #
 
-STAGES = ("dns-service", "recursion", "rpz", "block", "logging", "passthru", "all")
+STAGES = ("baseline", "dns-service", "recursion", "rpz", "block", "logging",
+          "passthru", "all")
 
 
 def main():
@@ -396,6 +443,8 @@ def main():
     stage = args.stage
     log.info("--- verifying stage: %s ---", stage)
 
+    if stage == "baseline":
+        check_baseline(wapi)
     if stage in ("dns-service", "all"):
         check_dns_service(wapi)
     if stage in ("recursion", "all"):
