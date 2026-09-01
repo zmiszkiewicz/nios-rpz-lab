@@ -219,6 +219,54 @@ class NiosWapi:
 
     # -- convenience --------------------------------------------------------- #
 
+    # -- schema ------------------------------------------------------------- #
+
+    def schema(self, object_type):
+        """
+        Field list for a WAPI object type, cached per instance.
+
+        NIOS field names are not the BIND names they correspond to in the GUI —
+        recursion lives on grid:dns as `allow_recursive_query`, not `recursion`.
+        Asking the appliance beats guessing, and it keeps working when a field
+        is renamed between WAPI versions.
+        """
+        if not hasattr(self, "_schema_cache"):
+            self._schema_cache = {}
+        if object_type in self._schema_cache:
+            return self._schema_cache[object_type]
+
+        url = self._url(object_type)
+        r = self.session.get(url, params={"_schema": "1"}, timeout=self.timeout)
+        if r.status_code != 200:
+            raise WapiError("GET", f"{url}?_schema", r.status_code, r.text)
+
+        fields = {f["name"]: f for f in r.json().get("fields", [])}
+        self._schema_cache[object_type] = fields
+        return fields
+
+    def resolve_field(self, object_type, candidates, purpose=None):
+        """
+        First candidate that actually exists on the object type.
+
+        Raises with the near-miss field names listed, so a rename shows you the
+        replacement instead of just failing.
+        """
+        fields = self.schema(object_type)
+        for name in candidates:
+            if name in fields:
+                if name != candidates[0]:
+                    log.debug("%s: using %r for %s", object_type, name,
+                              purpose or candidates[0])
+                return name
+
+        stem = (purpose or candidates[0]).split("_")[0][:6].lower()
+        near = sorted(n for n in fields if stem in n.lower())
+        raise WapiError(
+            "SCHEMA", object_type, 400,
+            f"None of {candidates} exist on {object_type}. "
+            f"Fields containing {stem!r}: {near or 'none'}"
+        )
+
     def grid_ref(self):
         """_ref of the Grid object."""
         grid = self.get("grid")
@@ -325,3 +373,49 @@ def clear_reason(reason_file="/tmp/rpz_check_reason.txt"):
         os.remove(reason_file)
     except OSError:
         pass
+
+
+def _main():
+    """
+    Dump the WAPI schema for an object type.
+
+        python3 nios_wapi.py grid:dns
+        python3 nios_wapi.py grid:dns recurs      # only matching fields
+        python3 nios_wapi.py member:dns
+
+    Useful when a field name does not behave as expected: it prints what the
+    appliance actually supports rather than what the docs imply.
+    """
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Dump a NIOS WAPI object schema.")
+    parser.add_argument("object_type", help="e.g. grid:dns, member:dns, zone_rp")
+    parser.add_argument("filter", nargs="?", help="only fields containing this substring")
+    parser.add_argument("--gm", default=os.getenv("GM_IP"))
+    args = parser.parse_args()
+
+    wapi = NiosWapi(host=args.gm)
+    wapi.connect(retries=2, delay=5)
+
+    fields = wapi.schema(args.object_type)
+    names = sorted(fields)
+    if args.filter:
+        names = [n for n in names if args.filter.lower() in n.lower()]
+
+    print(f"\n{args.object_type} — {len(names)} field(s)"
+          f"{f' matching {args.filter!r}' if args.filter else ''}\n")
+    for name in names:
+        info = fields[name]
+        types = "/".join(info.get("type", []))
+        supports = info.get("supports", "")
+        print(f"  {name:44s} {types:24s} {supports}")
+    print()
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(_main())
+    except (WapiError, WapiUnreachable) as exc:
+        log.error("%s", exc)
+        sys.exit(1)

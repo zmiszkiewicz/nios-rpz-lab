@@ -34,6 +34,25 @@ log = get_logger("configure_rpz")
 
 LAB_SUBNET_CIDR = os.getenv("LAB_SUBNET_CIDR", "10.100.0.0/24")
 
+# NIOS does not name these after their BIND equivalents. The GUI's "Allow
+# recursive queries" is `allow_recursive_query`, and "Allow recursive queries
+# from" is `recursive_query_list`. Both are resolved against the live WAPI
+# schema rather than assumed, because the names have moved between releases —
+# an earlier version of this script guessed `recursion` and failed with
+# "Unknown argument/field" on WAPI v2.13.1.
+RECURSION_ENABLE_FIELDS = ("allow_recursive_query", "recursion", "enable_recursion")
+RECURSION_ACL_FIELDS = ("recursive_query_list", "allow_recursion", "allow_recursive_query_list")
+FORWARDER_FIELDS = ("forwarders",)
+FORWARDER_ONLY_FIELDS = ("forwarders_only",)
+
+
+def recursion_fields(wapi):
+    """(enable field, ACL field) as this appliance actually names them."""
+    return (
+        wapi.resolve_field("grid:dns", RECURSION_ENABLE_FIELDS, "recursion"),
+        wapi.resolve_field("grid:dns", RECURSION_ACL_FIELDS, "recursion ACL"),
+    )
+
 
 # --------------------------------------------------------------------------- #
 # DNS service
@@ -68,25 +87,55 @@ def enable_recursion(wapi, subnet=LAB_SUBNET_CIDR):
     Turn on recursion and allow it from the lab subnet.
 
     RPZ only rewrites answers for queries NIOS actually resolves. With recursion
-    off, the desktop gets a referral and the policy never applies, which is why
-    this comes before the zone.
+    off the desktop gets REFUSED and the policy never applies, which is why this
+    is groundwork rather than lab content.
     """
-    grid_dns = wapi.grid_dns(fields=["recursion", "allow_recursion"])
+    enable_field, acl_field = recursion_fields(wapi)
+    grid_dns = wapi.grid_dns(fields=[enable_field, acl_field])
 
-    acl = grid_dns.get("allow_recursion") or []
+    acl = grid_dns.get(acl_field) or []
     has_subnet = any(entry.get("address") == subnet and entry.get("permission") == "ALLOW"
                      for entry in acl)
 
-    if grid_dns.get("recursion") and has_subnet:
+    if grid_dns.get(enable_field) and has_subnet:
         log.info("Recursion already enabled and %s already permitted", subnet)
         return False
 
     if not has_subnet:
         acl = acl + [{"_struct": "addressac", "address": subnet, "permission": "ALLOW"}]
 
-    wapi.put(grid_dns["_ref"], {"recursion": True, "allow_recursion": acl})
-    log.info("Recursion enabled, allow_recursion now permits %s", subnet)
+    wapi.put(grid_dns["_ref"], {enable_field: True, acl_field: acl})
+    log.info("Recursion enabled (%s), %s now permits %s", enable_field, acl_field, subnet)
+
+    _warn_on_member_override(wapi, enable_field, acl_field)
     return True
+
+
+def _warn_on_member_override(wapi, enable_field, acl_field):
+    """
+    Flag members that override the grid setting.
+
+    A member with use_allow_recursive_query=true ignores what we just set on the
+    grid, and the only visible symptom is a REFUSED that looks like the grid
+    change silently failed.
+    """
+    use_flags = [f"use_{enable_field}", f"use_{acl_field}"]
+    available = [f for f in use_flags if f in wapi.schema("member:dns")]
+    if not available:
+        return
+
+    try:
+        members = wapi.get("member:dns",
+                           **{"_return_fields+": ",".join(["host_name"] + available)})
+    except WapiError:
+        return
+
+    for member in members:
+        overriding = [f for f in available if member.get(f)]
+        if overriding:
+            log.warning("Member %s overrides the grid setting (%s). The grid-level "
+                        "change will not apply there.",
+                        member.get("host_name", "?"), ", ".join(overriding))
 
 
 # --------------------------------------------------------------------------- #
@@ -288,10 +337,25 @@ def show_status(wapi):
         state = "running" if member.get("enable_dns") else "STOPPED"
         print(f"  DNS service        {member.get('host_name', '?')}: {state}")
 
-    grid_dns = wapi.grid_dns(fields=["recursion", "allow_recursion", "logging_categories"])
-    print(f"  Recursion          {'enabled' if grid_dns.get('recursion') else 'DISABLED'}")
-    for entry in grid_dns.get("allow_recursion") or []:
-        print(f"    allow_recursion  {entry.get('address')} {entry.get('permission')}")
+    enable_field, acl_field = recursion_fields(wapi)
+    fields = [enable_field, acl_field, "logging_categories"]
+    for optional in ("forwarders", "forwarders_only"):
+        if optional in wapi.schema("grid:dns"):
+            fields.append(optional)
+
+    grid_dns = wapi.grid_dns(fields=fields)
+    print(f"  Recursion          "
+          f"{'enabled' if grid_dns.get(enable_field) else 'DISABLED'}  ({enable_field})")
+    acl = grid_dns.get(acl_field) or []
+    if not acl:
+        print(f"    {acl_field:16s} <empty — all clients may recurse>")
+    for entry in acl:
+        print(f"    {acl_field:16s} {entry.get('address')} {entry.get('permission')}")
+
+    forwarders = grid_dns.get("forwarders") or []
+    if forwarders:
+        print(f"  Forwarders         {', '.join(forwarders)}"
+              f"{' (only)' if grid_dns.get('forwarders_only') else ''}")
 
     categories = grid_dns.get("logging_categories") or {}
     rpz_keys = [key for key in categories if "rpz" in key.lower()]

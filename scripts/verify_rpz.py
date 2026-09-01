@@ -25,6 +25,7 @@ import os
 import sys
 
 import domains as D
+from configure_rpz import recursion_fields
 from desktop_dns import DesktopUnreachable, explain_failure, probe_desktop
 from nios_wapi import (NiosWapi, WapiError, WapiUnreachable, clear_reason, fail,
                        get_logger)
@@ -115,16 +116,18 @@ def check_dns_service(wapi):
 # --------------------------------------------------------------------------- #
 
 def check_recursion(wapi, subnet=LAB_SUBNET_CIDR):
-    grid_dns = wapi.grid_dns(fields=["recursion", "allow_recursion"])
+    # Field names come from the appliance's schema — see configure_rpz for why.
+    enable_field, acl_field = recursion_fields(wapi)
+    grid_dns = wapi.grid_dns(fields=[enable_field, acl_field])
 
-    if not grid_dns.get("recursion"):
-        fail("Recursion is still disabled on the grid. Without it NIOS never resolves "
-             "the desktop's queries, so an RPZ can never match. Enable it under Data "
-             "Management > DNS > Grid DNS Properties > General.")
+    if not grid_dns.get(enable_field):
+        fail("Recursion is disabled on the grid. Without it NIOS never resolves the "
+             "desktop's queries, so an RPZ can never match. Run "
+             "'python3 bootstrap_nios.py' to repair the groundwork.")
 
-    log.info("PASS  Recursion is enabled")
+    log.info("PASS  Recursion is enabled (%s)", enable_field)
 
-    acl = grid_dns.get("allow_recursion") or []
+    acl = grid_dns.get(acl_field) or []
     if not acl:
         log.info("PASS  allow_recursion is unrestricted (all clients may recurse)")
         return True
@@ -132,11 +135,11 @@ def check_recursion(wapi, subnet=LAB_SUBNET_CIDR):
     permitted = [e for e in acl if e.get("permission") == "ALLOW"]
     if not any(_acl_covers(entry.get("address"), subnet) for entry in permitted):
         listed = ", ".join(f"{e.get('address')}:{e.get('permission')}" for e in acl) or "none"
-        fail(f"Recursion is on, but the lab subnet {subnet} is not in the "
-             f"allow_recursion list (currently: {listed}). The desktop's queries will "
-             f"be refused. Add {subnet} as an Allow entry.")
+        fail(f"Recursion is on, but the lab subnet {subnet} is not in {acl_field} "
+             f"(currently: {listed}). The desktop's queries will be refused. Run "
+             f"'python3 bootstrap_nios.py' to repair the groundwork.")
 
-    log.info("PASS  allow_recursion permits %s", subnet)
+    log.info("PASS  %s permits %s", acl_field, subnet)
     return True
 
 

@@ -62,7 +62,13 @@ def default_forwarder(vpc_cidr=LAB_VPC_CIDR):
 
 def set_forwarders(wapi, forwarder):
     """Point the grid at an upstream resolver, leaving root recursion as fallback."""
-    grid_dns = wapi.grid_dns(fields=["forwarders", "forwarders_only"])
+    schema = wapi.schema("grid:dns")
+    if "forwarders" not in schema:
+        log.warning("grid:dns has no 'forwarders' field on this WAPI version, skipping")
+        return False
+
+    fields = ["forwarders"] + (["forwarders_only"] if "forwarders_only" in schema else [])
+    grid_dns = wapi.grid_dns(fields=fields)
     current = grid_dns.get("forwarders") or []
 
     if forwarder in current:
@@ -71,7 +77,11 @@ def set_forwarders(wapi, forwarder):
 
     # forwarders_only stays false so the grid can still recurse if the VPC
     # resolver ever stops answering.
-    wapi.put(grid_dns["_ref"], {"forwarders": [forwarder], "forwarders_only": False})
+    payload = {"forwarders": [forwarder]}
+    if "forwarders_only" in schema:
+        payload["forwarders_only"] = False
+
+    wapi.put(grid_dns["_ref"], payload)
     log.info("Forwarding to %s (root recursion retained as fallback)", forwarder)
     return True
 
