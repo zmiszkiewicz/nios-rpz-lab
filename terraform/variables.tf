@@ -1,15 +1,28 @@
 ###############################################################################
-# Required — no defaults, must be supplied via TF_VAR_* or a .tfvars file
+# NIOS image
 ###############################################################################
 
 variable "nios_ami_id" {
   description = <<-EOT
     AMI ID of the privately shared Infoblox vNIOS image, NOT the AWS Marketplace
-    listing. Region- and account-specific, so there is no sensible default.
-    Export as TF_VAR_nios_ami_id.
+    listing.
+
+    The default is the vNIOS Grid Master image tech-summit-security-niosx uses
+    in eu-central-1, paired there with the same m5.xlarge / IB-V825 combination
+    this lab uses. Every other NIOS lab in this organisation hardcodes its
+    equivalent in a `locals` block; a variable with a default keeps that
+    zero-configuration behaviour while still allowing an override with
+    TF_VAR_nios_ami_id when the image is rotated or the region changes.
+
+    Region-specific. If you move the lab out of eu-central-1 you must change it.
   EOT
   type        = string
+  default     = "ami-0f223da0ec214a840"
 }
+
+###############################################################################
+# Required — no defaults, must be supplied via TF_VAR_* or a .tfvars file
+###############################################################################
 
 variable "windows_admin_password" {
   description = "Password for the Windows Administrator account on the desktop"

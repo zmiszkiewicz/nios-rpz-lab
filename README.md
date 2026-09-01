@@ -32,8 +32,9 @@ Nothing about the RPZ itself is created by Terraform. Building it is the lab.
 - An AWS account the Instruqt sandbox can assume, with EC2, VPC and EIP quota
   for two instances and two Elastic IPs.
 - **A privately shared Infoblox vNIOS AMI in your target region.** Not the AWS
-  Marketplace listing — the lab is built around the same privately shared image
-  the other Infoblox tracks in this organisation use. Find yours with:
+  Marketplace listing — the lab defaults to the same privately shared image
+  `tech-summit-security-niosx` uses in eu-central-1, so in the normal case there
+  is nothing to do. To use a different one, find it with:
   ```bash
   aws ec2 describe-images --region eu-central-1 --owners <infoblox-account-id> \
     --filters "Name=name,Values=*nios*" --query 'Images[].[ImageId,Name]' --output table
@@ -52,16 +53,19 @@ Nothing about the RPZ itself is created by Terraform. Building it is the lab.
 
 ### Instruqt secrets
 
-These must exist on the track before it will run. `NIOS_AMI_ID` is new relative
-to the other labs in this organisation — you will need to create it.
+All four already exist on the other tracks in this organisation — nothing new
+needs provisioning.
 
 | Secret | Purpose |
 |---|---|
-| `NIOS_AMI_ID` | Privately shared vNIOS AMI ID for the deployment region |
 | `TF_VAR_windows_admin_password` | Windows Administrator password; also used for the NIOS `admin` account and by the Guacamole mapping |
 | `DEMO_AWS_ACCESS_KEY_ID` | Credentials for the account owning the public DNS zone |
 | `DEMO_AWS_SECRET_ACCESS_KEY` | " |
 | `DEMO_HOSTED_ZONE_ID` | Route 53 hosted zone ID for the per-participant names |
+
+| Optional secret | Purpose |
+|---|---|
+| `NIOS_AMI_ID` | Overrides `var.nios_ami_id` at runtime. Only worth setting to test a rotated image without a commit. |
 
 This track does **not** allocate an Infoblox CSP sandbox tenant, so
 `Infoblox_Token`, `INFOBLOX_EMAIL`, `INFOBLOX_PASSWORD` and `BROKER_API_TOKEN`
@@ -70,23 +74,23 @@ tenant allocation removes about eight minutes of propagation sleeps from setup.
 
 ### Terraform variables
 
-Everything has a default except the three below. See
+Everything has a default except the two passwords. See
 `terraform/terraform.tfvars.example` for the full set.
 
 | Variable | Set from |
 |---|---|
-| `nios_ami_id` | `TF_VAR_nios_ami_id`, sourced from the `NIOS_AMI_ID` secret |
 | `windows_admin_password` | `TF_VAR_windows_admin_password` |
 | `nios_admin_password` | Defaults to `TF_VAR_windows_admin_password` in `setup-shell` |
+| `nios_ami_id` | Defaults to `ami-0f223da0ec214a840` (see below) |
 
-### Placeholders to confirm before go-live
+### Values to confirm before go-live
 
-| Placeholder | Where | Why it needs confirming |
+| Value | Where | Why it needs confirming |
 |---|---|---|
-| `NIOS_AMI_ID` | Instruqt secret | Region- and account-specific. |
+| `nios_ami_id` | `terraform/variables.tf` | Defaults to the vNIOS Grid Master image `tech-summit-security-niosx` uses in eu-central-1. Confirm it is still shared with your account and has not been rotated. |
 | `nios_temp_license` | `terraform/variables.tf` | The `rpz` token must actually grant DNS Firewall on your build. |
 | `LAB_DNS_ZONE` | `scripts/setup_dns.py`, `track_scripts/setup-rdpclient` | Defaults to `iracictechguru.com`, matching the other labs. |
-| AWS region | `terraform/variables.tf` | Defaults to `eu-central-1`; the AMI must exist there. |
+| AWS region | `terraform/variables.tf` | Defaults to `eu-central-1`; the AMI is region-specific and must exist there. |
 
 ## Layout
 

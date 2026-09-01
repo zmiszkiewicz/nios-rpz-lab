@@ -10,18 +10,21 @@
 
 # --- Required ----------------------------------------------------------------
 
-# Privately shared Infoblox vNIOS AMI for your account and region.
-# NOT the AWS Marketplace listing. Find it with:
-#   aws ec2 describe-images --region eu-central-1 --owners <infoblox-account-id> \
-#     --filters "Name=name,Values=*nios*" --query 'Images[].[ImageId,Name]' --output table
-nios_ami_id = "ami-REPLACE_ME"
-
 # Local Administrator password on the Windows desktop. Must match the password
 # in the track's setup-rdpclient Guacamole mapping.
 windows_admin_password = "REPLACE_ME"
 
 # Initial NIOS `admin` password. Must satisfy NIOS complexity rules.
 nios_admin_password = "REPLACE_ME"
+
+# --- NIOS image ----------------------------------------------------------------
+
+# Optional. Defaults to the vNIOS Grid Master image tech-summit-security-niosx
+# uses in eu-central-1, so you only need this when the image is rotated or you
+# move region. NOT the AWS Marketplace listing. Find yours with:
+#   aws ec2 describe-images --region eu-central-1 --owners <infoblox-account-id> \
+#     --filters "Name=name,Values=*nios*" --query 'Images[].[ImageId,Name]' --output table
+# nios_ami_id = "ami-0f223da0ec214a840"
 
 # --- Environment -------------------------------------------------------------
 

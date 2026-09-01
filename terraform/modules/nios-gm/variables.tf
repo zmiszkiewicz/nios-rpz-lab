@@ -5,9 +5,8 @@ variable "name_prefix" {
 
 variable "nios_ami_id" {
   description = <<-EOT
-    AMI ID of the privately shared Infoblox vNIOS image. Region-specific and
-    account-specific; there is no default on purpose. Not the AWS Marketplace
-    listing. Supply via TF_VAR_nios_ami_id.
+    AMI ID of the privately shared Infoblox vNIOS image, not the AWS Marketplace
+    listing. Required at module level; the root module carries the default.
   EOT
   type        = string
 
