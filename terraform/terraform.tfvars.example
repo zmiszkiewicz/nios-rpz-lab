@@ -1,0 +1,57 @@
+###############################################################################
+# Example variables — copy to terraform.tfvars and fill in.
+###############################################################################
+# Inside Instruqt none of this file is used: track_scripts/setup-shell exports
+# TF_VAR_* from Instruqt secrets and the AWS sandbox instead. This file is for
+# running the stack by hand.
+#
+# terraform.tfvars is gitignored. Do not commit real values.
+###############################################################################
+
+# --- Required ----------------------------------------------------------------
+
+# Privately shared Infoblox vNIOS AMI for your account and region.
+# NOT the AWS Marketplace listing. Find it with:
+#   aws ec2 describe-images --region eu-central-1 --owners <infoblox-account-id> \
+#     --filters "Name=name,Values=*nios*" --query 'Images[].[ImageId,Name]' --output table
+nios_ami_id = "ami-REPLACE_ME"
+
+# Local Administrator password on the Windows desktop. Must match the password
+# in the track's setup-rdpclient Guacamole mapping.
+windows_admin_password = "REPLACE_ME"
+
+# Initial NIOS `admin` password. Must satisfy NIOS complexity rules.
+nios_admin_password = "REPLACE_ME"
+
+# --- Environment -------------------------------------------------------------
+
+aws_region  = "eu-central-1"
+instruqt_id = "local"
+
+# --- Networking --------------------------------------------------------------
+
+vpc_cidr    = "10.100.0.0/16"
+subnet_cidr = "10.100.0.0/24"
+
+nios_mgmt_private_ip = "10.100.0.10"
+nios_lan1_private_ip = "10.100.0.11"
+desktop_private_ip   = "10.100.0.110"
+
+# Narrow this to your own egress IP when running outside Instruqt.
+management_ingress_cidrs = ["0.0.0.0/0"]
+
+# --- Sizing ------------------------------------------------------------------
+
+nios_instance_type    = "m5.xlarge"
+desktop_instance_type = "t3.medium"
+
+windows_ami_name_filter = "Windows_Server-2022-English-Full-Base-*"
+
+# The `rpz` token is what grants DNS Firewall. No lab in this organisation has
+# licensed RPZ before, so verify it on the first boot — see README
+# Troubleshooting. Two models are in use across the other labs:
+#   IB-V825  (tech-summit-security-niosx, instruqt-aws-dc-lab-full)
+#   IB-V926  (app-migration-niosx)
+# If IB-V825 will not carry DNS Firewall, IB-V926 is the next thing to try, and
+# nios_instance_type may need to grow with it.
+nios_temp_license = "nios IB-V825 enterprise dns dhcp cloud rpz"
