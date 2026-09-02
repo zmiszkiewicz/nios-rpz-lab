@@ -145,13 +145,42 @@ def _warn_on_member_override(wapi, enable_field, acl_field):
 def find_zone(wapi, fqdn=D.RPZ_ZONE_FQDN):
     """The zone_rp object for the lab's RPZ, or None."""
     return wapi.get_one("zone_rp", fqdn=fqdn,
-                        **{"_return_fields+": "fqdn,rpz_policy,rpz_severity,comment"})
+                        **{"_return_fields+": "fqdn,rpz_policy,rpz_severity,comment,grid_primary"})
+
+
+def _zone_grid_primary(wapi):
+    """
+    One memberserver struct per DNS member, for use in zone_rp.grid_primary.
+
+    grid_primary tells NIOS which member(s) are responsible for enforcing the
+    RPZ zone. Without it the zone is stored in the database but no member is
+    assigned to process it, so the DNS service ignores the RPZ entirely — the
+    zone shows as "created" in Grid Manager but blocked names still resolve.
+    """
+    members = wapi.members_dns()
+    return [
+        {"_struct": "memberserver", "name": m["host_name"]}
+        for m in members
+        if m.get("host_name")
+    ]
 
 
 def create_zone(wapi, fqdn=D.RPZ_ZONE_FQDN):
-    """Create the local Response Policy Zone if it is not already there."""
-    if find_zone(wapi, fqdn):
-        log.info("Response Policy Zone %s already exists", fqdn)
+    """Create the local Response Policy Zone, or assign it to a member if it exists without one."""
+    grid_primary = _zone_grid_primary(wapi)
+
+    existing = find_zone(wapi, fqdn)
+    if existing:
+        if existing.get("grid_primary"):
+            log.info("Response Policy Zone %s already exists and is assigned to a member", fqdn)
+            return False
+        # Zone is there but has no member — the RPZ will never fire. Fix it.
+        if grid_primary:
+            wapi.put(existing["_ref"], {"grid_primary": grid_primary})
+            log.info("Assigned Response Policy Zone %s to %d member(s)",
+                     fqdn, len(grid_primary))
+            return True
+        log.info("Response Policy Zone %s exists (no members available to assign)", fqdn)
         return False
 
     payload = {
@@ -164,6 +193,8 @@ def create_zone(wapi, fqdn=D.RPZ_ZONE_FQDN):
         "comment": D.RPZ_ZONE_COMMENT,
         "view": D.DNS_VIEW,
     }
+    if grid_primary:
+        payload["grid_primary"] = grid_primary
 
     try:
         wapi.post("zone_rp", payload)
@@ -180,7 +211,8 @@ def create_zone(wapi, fqdn=D.RPZ_ZONE_FQDN):
             )
         raise
 
-    log.info("Created Response Policy Zone %s (policy GIVEN, severity MAJOR)", fqdn)
+    log.info("Created Response Policy Zone %s (policy GIVEN, severity MAJOR, "
+             "assigned to %d member(s))", fqdn, len(grid_primary))
     return True
 
 
@@ -370,8 +402,11 @@ def show_status(wapi):
         print()
         return
 
+    primary_names = [m.get("name", "?") for m in (zone.get("grid_primary") or [])]
+    primary_str = ", ".join(primary_names) if primary_names else "NO MEMBER ASSIGNED — RPZ will not fire"
     print(f"  RPZ zone           {zone['fqdn']} (policy {zone.get('rpz_policy')}, "
           f"severity {zone.get('rpz_severity')})")
+    print(f"  RPZ member(s)      {primary_str}")
 
     rules = list_rules(wapi)
     blocked = sorted(name for name, r in rules.items() if r.get("canonical", "") == "")
