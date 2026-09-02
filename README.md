@@ -123,8 +123,22 @@ scripts/
   wait_for_nios.py            blocks until the Grid Master and desktop are up
   setup_dns.py                publishes the per-participant Route 53 names
   cleanup_dns_records.py      removes them again
+  check_sg_descriptions.py    pre-push guard, see below
   requirements.txt
 ```
+
+## Before pushing a Terraform change
+
+```bash
+python3 scripts/check_sg_descriptions.py
+```
+
+AWS validates security-group descriptions against
+`^[0-9A-Za-z_ .:/()#,@\[\]+=&;{}!$*-]*$` — no em dashes, no apostrophes.
+`terraform validate` does not catch it, so the failure lands at
+`terraform apply`, which in a track means eight minutes into a start with the
+participant already waiting. This is what a stray em dash in an egress
+description cost once; the guard exists so it cannot happen twice.
 
 ## Deploy
 

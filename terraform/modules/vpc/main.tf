@@ -230,8 +230,11 @@ resource "aws_security_group" "bypass" {
     cidr_blocks = [var.vpc_cidr]
   }
 
+  # AWS restricts rule descriptions to
+  # ^[0-9A-Za-z_ .:/()#,@\[\]+=&;{}!$*-]*$ — no em dashes, no apostrophes.
+  # Keep every description in this file plain ASCII.
   egress {
-    description = "Unrestricted — including DNS to any public resolver"
+    description = "Unrestricted, including DNS to any public resolver"
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
