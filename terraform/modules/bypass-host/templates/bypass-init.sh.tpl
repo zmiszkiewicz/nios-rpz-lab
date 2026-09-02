@@ -11,9 +11,10 @@
 # (secure-ai-infoblox/scripts/aws-user-data.sh), trimmed to what this
 # demonstration needs.
 #
-# Terraform substitutes ${public_resolver}, ${fallback_resolver} and ${gm_ip}.
-# Only those three use brace syntax — anything else with $${...} would collide
-# with templatefile() interpolation.
+# Terraform substitutes three variables into this file: public_resolver,
+# fallback_resolver and gm_ip. Those are the only single-dollar brace
+# expressions allowed here; anything bash needs to expand itself must use a
+# doubled dollar.
 # ---------------------------------------------------------------------------
 set -x
 exec > /var/log/bypass-init.log 2>&1
@@ -48,7 +49,9 @@ for d in claude.ai chatgpt.com www.infoblox.com; do
     if [ -n "$out" ]; then
         printf "  %-22s RESOLVED  %s\n" "$d" "$out"
     else
-        # $${...} so templatefile() emits a literal ${...} for bash to expand.
+        # Doubled dollar below so templatefile leaves the brace expansion for
+        # bash instead of evaluating it. Never write a single-dollar brace
+        # expression in this file, not even inside a comment.
         printf "  %-22s %-9s (no answer)\n" "$d" "$${status:-TIMEOUT}"
     fi
 done

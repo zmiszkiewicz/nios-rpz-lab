@@ -10,9 +10,10 @@
 #     the block cannot be silently bypassed;
 #   * desktop shortcuts are dropped for the sites the participant will test.
 #
-# Terraform substitutes ${admin_password}, ${dns_server_ip} and
-# ${grid_manager_url}. Avoid bare $${...} syntax elsewhere in this file — it
-# collides with templatefile() interpolation.
+# Terraform substitutes three variables into this file: admin_password,
+# dns_server_ip and grid_manager_url. Those are the only single-dollar brace
+# expressions allowed here; anything PowerShell needs to expand itself must use
+# a doubled dollar.
 # ---------------------------------------------------------------------------
 $ErrorActionPreference = "Continue"
 Start-Transcript -Path "C:\user_data.log" -Append
