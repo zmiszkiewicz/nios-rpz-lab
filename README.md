@@ -5,9 +5,9 @@ NIOS Response Policy Zones**.
 
 Published at **<https://github.com/zmiszkiewicz/nios-rpz-lab>** and cloned
 anonymously into the Instruqt shell container at track start by
-`track_scripts/setup-shell`. It deploys a vNIOS Grid Master and a Windows
-desktop into an AWS sandbox, and provides the WAPI tooling the challenge checks
-use to verify the participant's work.
+`track_scripts/setup-shell`. It deploys a vNIOS Grid Master, a Windows
+desktop and an unmanaged Linux host into an AWS sandbox, and provides the WAPI
+tooling the challenge checks use to verify the participant's work.
 
 To point a track at a fork or a branch without editing `setup-shell`, set
 `LAB_REPO_URL` or `LAB_REPO_REF` in the environment.
@@ -16,13 +16,14 @@ To point a track at a fork or a branch without editing `setup-shell`, set
 
 ## What gets deployed
 
-One AWS region, two instances, roughly **$0.27/hour** in eu-central-1.
+One AWS region, three instances, roughly **$0.28/hour** in eu-central-1.
 
 | Resource | Detail |
 |---|---|
 | VPC | `10.100.0.0/16`, one public subnet `10.100.0.0/24`, IGW, route table |
 | NIOS Grid Master | `m5.xlarge`, privately shared vNIOS AMI, MGMT `10.100.0.10`, LAN1 `10.100.0.11` + EIP |
 | Windows desktop | `t3.medium`, Windows Server 2022, `10.100.0.110` + EIP, resolver pinned to LAN1 |
+| Unmanaged host | `t3.micro`, Ubuntu 22.04, `10.100.0.120` + EIP, resolver pinned to **8.8.8.8** — bypasses the RPZ on purpose |
 | Security groups | One per role — see [Security posture](#security-posture) |
 
 Nothing about the RPZ itself is created by Terraform. Building it is the lab.
@@ -30,7 +31,7 @@ Nothing about the RPZ itself is created by Terraform. Building it is the lab.
 ## Prerequisites
 
 - An AWS account the Instruqt sandbox can assume, with EC2, VPC and EIP quota
-  for two instances and two Elastic IPs.
+  for three instances and three Elastic IPs.
 - **A privately shared Infoblox vNIOS AMI in your target region.** Not the AWS
   Marketplace listing — the lab defaults to the same privately shared image
   `tech-summit-security-niosx` uses in eu-central-1, so in the normal case there
@@ -102,16 +103,21 @@ terraform/
   providers.tf                aws ~> 5.20, pinned to Terraform ~> 1.10
   terraform.tfvars.example
   modules/
-    vpc/                      VPC, subnet, IGW, routing, both security groups
+    vpc/                      VPC, subnet, IGW, routing, all three security groups
     nios-gm/                  Grid Master: 2 ENIs, EIP on LAN1, #infoblox-config
     desktop/                  Windows Server 2022 + PowerShell bootstrap
       templates/desktop-init.ps1.tpl
+    bypass-host/              Ubuntu host pinned to a public resolver
+      templates/bypass-init.sh.tpl
 
 scripts/
   nios_wapi.py                WAPI client: version probe, verbs, restart, readiness
   domains.py                  the blocked domain sets and RPZ object names
   bootstrap_nios.py           setup-time groundwork: DNS on, recursion, forwarders
+  create_rpz_feed.py          builds the RPZ and all 42 block rules in one command
   configure_rpz.py            idempotent configuration CLI
+  bypass_host.py              DNS lookups on the unmanaged host, over SSH
+  lock_dns_egress.py          rewrites the bypass host's egress to close the gap
   verify_rpz.py               per-challenge verification, drives the check scripts
   desktop_dns.py              runs DNS lookups on the desktop over WinRM
   wait_for_nios.py            blocks until the Grid Master and desktop are up
@@ -139,7 +145,8 @@ export TF_VAR_windows_admin_password='...'
 cd ../scripts
 python3 wait_for_nios.py          # six to ten minutes
 python3 bootstrap_nios.py         # DNS on, recursion scoped, forwarders set
-python3 configure_rpz.py all      # build the whole policy in one go
+python3 create_rpz_feed.py        # the RPZ and every block rule
+python3 lock_dns_egress.py --status
 python3 verify_rpz.py --stage all # smoke-test it
 ```
 
@@ -151,8 +158,11 @@ cd ../terraform && terraform destroy -auto-approve
 ```
 
 Everything the lab creates is in Terraform state — VPC, subnet, IGW, route
-table, two security groups, two ENIs, two EIPs, the key pair and both
-instances. There is no CSP tenant to deallocate. `track_scripts/cleanup-shell`
+table, three security groups, three ENIs, three EIPs, the key pair and all three
+instances. There is no CSP tenant to deallocate. The bypass security group's
+egress is rewritten at runtime by `lock_dns_egress.py`, which `terraform
+destroy` handles regardless; `ignore_changes = [egress]` stops a later apply
+reverting the participant's remediation. `track_scripts/cleanup-shell`
 runs both steps and retries the destroy once.
 
 Every resource carries these tags, so anything orphaned is easy to find:
@@ -169,9 +179,10 @@ Track=nios-rpz-genai-block  Participant=<instruqt participant id>
 | `terraform apply` | 2–3 min |
 | vNIOS boot, licence, Grid Manager up | 6–10 min |
 | Windows boot and bootstrap | 4–5 min |
+| Unmanaged host boot | <1 min |
 | **Setup total** (waits run in parallel) | **~12 min** |
 | Grid Master bootstrap (DNS, recursion, forwarders) | <1 min |
-| Participant, five challenges | ~40 min |
+| Participant, six challenges | ~45 min |
 | `terraform destroy` | 3–4 min |
 
 Setup runs while the participant reads challenge 1, so the lab fits inside an
@@ -190,6 +201,11 @@ deliberate:
 - **Outbound TCP and UDP 853 are excluded** from the desktop's egress rules, so
   DNS-over-TLS and DNS-over-QUIC cannot be used to bypass the RPZ. Security
   groups are allow-only, so this is done by splitting the port range around 853.
+
+The unmanaged host is the deliberate exception: it starts with unrestricted
+egress, including port 53 to any public resolver, because being outside policy
+is the whole point of it. Challenge 5 has the participant close that with
+`lock_dns_egress.py --lock`.
 
 Still open by design, and worth knowing about:
 

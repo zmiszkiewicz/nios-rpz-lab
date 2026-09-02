@@ -196,3 +196,54 @@ resource "aws_security_group" "desktop" {
 
   tags = merge(var.common_tags, { Name = "${var.name_prefix}-desktop-sg" })
 }
+
+###############################################################################
+# Security group — unmanaged "bypass" host
+###############################################################################
+# Starts with wide-open egress on purpose. This host does not use the Grid
+# Master as its resolver, so it can reach a public DNS service directly and the
+# RPZ never sees its queries. That is the gap the participant discovers.
+#
+# scripts/lock_dns_egress.py then revokes this egress and replaces it with a
+# narrow set that permits port 53 only to the Grid Master, which is how the gap
+# gets closed. The group name is predictable so that script can find it.
+###############################################################################
+
+resource "aws_security_group" "bypass" {
+  name        = "${var.name_prefix}-bypass-sg"
+  description = "Unmanaged host: SSH in, unrestricted egress until the lab locks it down"
+  vpc_id      = aws_vpc.main.id
+
+  ingress {
+    description = "SSH from the Instruqt shell container"
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = var.management_ingress_cidrs
+  }
+
+  ingress {
+    description = "ICMP from within the VPC"
+    from_port   = -1
+    to_port     = -1
+    protocol    = "icmp"
+    cidr_blocks = [var.vpc_cidr]
+  }
+
+  egress {
+    description = "Unrestricted — including DNS to any public resolver"
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  # lock_dns_egress.py rewrites the egress rules at runtime. Without this,
+  # the next `terraform apply` or a challenge re-check would revert the
+  # participant's remediation.
+  lifecycle {
+    ignore_changes = [egress]
+  }
+
+  tags = merge(var.common_tags, { Name = "${var.name_prefix}-bypass-sg" })
+}

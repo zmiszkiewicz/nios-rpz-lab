@@ -28,6 +28,16 @@ output "desktop_security_group_id" {
   value       = aws_security_group.desktop.id
 }
 
+output "bypass_security_group_id" {
+  description = "Security group for the unmanaged bypass host"
+  value       = aws_security_group.bypass.id
+}
+
+output "bypass_security_group_name" {
+  description = "Name of the bypass security group — lock_dns_egress.py looks it up by name"
+  value       = aws_security_group.bypass.name
+}
+
 output "internet_gateway_id" {
   description = "IGW ID, used by instances to order their creation correctly"
   value       = aws_internet_gateway.gw.id

@@ -113,3 +113,25 @@ module "desktop" {
 
   depends_on = [module.vpc]
 }
+
+###############################################################################
+# Unmanaged host that bypasses the Grid Master
+###############################################################################
+
+module "bypass_host" {
+  source = "./modules/bypass-host"
+
+  name_prefix            = local.name_prefix
+  ubuntu_ami_name_filter = var.ubuntu_ami_name_filter
+  instance_type          = var.bypass_instance_type
+  private_ip             = var.bypass_private_ip
+  public_resolver        = var.bypass_public_resolver
+  fallback_resolver      = var.bypass_fallback_resolver
+  gm_private_ip          = var.nios_lan1_private_ip
+  subnet_id              = module.vpc.subnet_id
+  security_group_id      = module.vpc.bypass_security_group_id
+  key_name               = aws_key_pair.lab.key_name
+  common_tags            = local.common_tags
+
+  depends_on = [module.vpc]
+}

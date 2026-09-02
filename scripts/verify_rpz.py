@@ -7,11 +7,11 @@ written to /tmp/rpz_check_reason.txt so the check script can hand it straight to
 Instruqt's fail-message, and the participant is told what is actually wrong
 rather than just seeing a red cross.
 
-    verify_rpz.py --stage dns-service    challenge 1
-    verify_rpz.py --stage recursion      challenge 2
-    verify_rpz.py --stage rpz            challenge 3
-    verify_rpz.py --stage block          challenge 4
-    verify_rpz.py --stage logging        challenge 5
+    verify_rpz.py --stage baseline       challenge 1
+    verify_rpz.py --stage rpz            challenge 2
+    verify_rpz.py --stage block          challenge 3
+    verify_rpz.py --stage logging        challenge 4
+    verify_rpz.py --stage bypass         challenge 5
     verify_rpz.py --stage passthru       challenge 6
     verify_rpz.py --stage all            everything, for a maintainer smoke test
 
@@ -358,7 +358,106 @@ def _try_fetch_rpz_hits(wapi, limit=200):
 
 
 # --------------------------------------------------------------------------- #
-# Stage 6 — passthru
+# Stage — the bypass is closed
+# --------------------------------------------------------------------------- #
+
+def check_bypass():
+    """
+    The unmanaged host must be governed by the RPZ, not merely broken.
+
+    Two ways to pass this challenge wrongly, both rejected here:
+      * lock egress but leave the host on 8.8.8.8 — DNS fails entirely, which
+        is an outage, not a policy;
+      * repoint the host at the Grid Master but leave egress open — the policy
+        applies until someone changes resolv.conf back.
+    Both the firewall rule and the resolver have to be right.
+    """
+    from bypass_host import (BypassHostUnreachable, current_resolver,  # noqa: PLC0415
+                             resolve)
+
+    gm_ip = os.getenv("GM_LAN1_PRIVATE_IP", "10.100.0.11")
+    public = os.getenv("BYPASS_PUBLIC_RESOLVER", "8.8.8.8")
+
+    try:
+        resolvers = current_resolver()
+    except BypassHostUnreachable as exc:
+        fail(f"Could not reach the unmanaged host over SSH: {exc}")
+
+    if gm_ip not in resolvers:
+        fail(f"The unmanaged host still resolves via {', '.join(resolvers) or 'nothing'} "
+             f"rather than the Grid Master at {gm_ip}. Blocking its egress stops the "
+             f"bypass but leaves the host with no DNS at all — point it at the "
+             f"corporate resolver too, with ./use-corporate-dns.sh on the host.")
+
+    log.info("PASS  Unmanaged host now resolves via the Grid Master (%s)", gm_ip)
+
+    # The firewall rule is the durable half of the fix. Without it, the next
+    # person to edit resolv.conf is outside policy again.
+    try:
+        egress_ok = _dns_egress_locked(gm_ip)
+    except Exception as exc:  # noqa: BLE001 — treated as "cannot tell"
+        log.info("NOTE  Could not read the security group (%s); relying on the "
+                 "resolution test alone", exc)
+        egress_ok = None
+
+    if egress_ok is False:
+        fail(f"The host is pointed at the Grid Master, but its security group still "
+             f"allows DNS to the internet — anyone who edits /etc/resolv.conf is "
+             f"outside policy again. Close it with: "
+             f"python3 lock_dns_egress.py --lock")
+    if egress_ok:
+        log.info("PASS  DNS egress is restricted to %s", gm_ip)
+
+    # And the policy must actually be biting on this host now.
+    try:
+        results = resolve(["claude.ai", D.CONTROL_DOMAIN])
+    except BypassHostUnreachable as exc:
+        fail(f"Could not run lookups on the unmanaged host: {exc}")
+
+    control = results.get(D.CONTROL_DOMAIN, {})
+    if not control.get("resolved"):
+        fail(f"{D.CONTROL_DOMAIN} does not resolve from the unmanaged host "
+             f"({control.get('status')}). The host has been cut off rather than "
+             f"brought under policy — check it can still reach {gm_ip} on port 53.")
+
+    log.info("PASS  %s still resolves from the unmanaged host", D.CONTROL_DOMAIN)
+
+    ai = results.get("claude.ai", {})
+    if ai.get("resolved"):
+        fail(f"claude.ai still resolves from the unmanaged host "
+             f"(got {', '.join(ai.get('addresses', []))}). It is reaching a resolver "
+             f"that is not applying the RPZ.")
+    if ai.get("status") != "NXDOMAIN":
+        fail(f"claude.ai is not resolving from the unmanaged host, but with "
+             f"{ai.get('status')} rather than NXDOMAIN — that is a connectivity "
+             f"problem, not the RPZ. The host should be getting NXDOMAIN from "
+             f"{gm_ip}.")
+
+    log.info("PASS  claude.ai is blocked from the unmanaged host by the RPZ (NXDOMAIN)")
+    log.info("      The bypass is closed: %s is unreachable for DNS and the host "
+             "is governed.", public)
+    return True
+
+
+def _dns_egress_locked(gm_ip):
+    """
+    True/False if the bypass security group's DNS egress is restricted.
+
+    Raises if the group cannot be inspected, which the caller treats as
+    "cannot tell" rather than as a failure — the resolution test above is the
+    stronger signal.
+    """
+    import boto3  # noqa: PLC0415 — only needed on this path
+    from lock_dns_egress import find_group, is_locked  # noqa: PLC0415
+
+    region = os.getenv("AWS_REGION", os.getenv("AWS_DEFAULT_REGION", "eu-central-1"))
+    ec2 = boto3.client("ec2", region_name=region)
+    group = find_group(ec2, os.getenv("BYPASS_SG_ID"), os.getenv("BYPASS_SG_NAME"))
+    return is_locked(group, gm_ip)
+
+
+# --------------------------------------------------------------------------- #
+# Stage — passthru
 # --------------------------------------------------------------------------- #
 
 def check_passthru(wapi, domain=None):
@@ -418,7 +517,7 @@ def check_passthru(wapi, domain=None):
 # --------------------------------------------------------------------------- #
 
 STAGES = ("baseline", "dns-service", "recursion", "rpz", "block", "logging",
-          "passthru", "all")
+          "bypass", "passthru", "all")
 
 
 def main():
@@ -458,6 +557,8 @@ def main():
         check_block()
     if stage in ("logging", "all"):
         check_logging(wapi)
+    if stage in ("bypass", "all"):
+        check_bypass()
     if stage in ("passthru", "all"):
         check_passthru(wapi, args.domain)
 

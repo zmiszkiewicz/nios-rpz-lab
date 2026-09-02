@@ -41,6 +41,36 @@ output "desktop_instance_id" {
   value       = module.desktop.instance_id
 }
 
+output "bypass_public_ip" {
+  description = "Elastic IP of the unmanaged host — SSH target for the bypass challenge"
+  value       = module.bypass_host.public_ip
+}
+
+output "bypass_private_ip" {
+  description = "Private IP of the unmanaged host"
+  value       = module.bypass_host.private_ip
+}
+
+output "bypass_instance_id" {
+  description = "EC2 instance ID of the unmanaged host"
+  value       = module.bypass_host.instance_id
+}
+
+output "bypass_public_resolver" {
+  description = "The public resolver the unmanaged host uses to bypass the Grid Master"
+  value       = module.bypass_host.public_resolver
+}
+
+output "bypass_security_group_id" {
+  description = "Security group of the unmanaged host — lock_dns_egress.py rewrites its egress"
+  value       = module.vpc.bypass_security_group_id
+}
+
+output "bypass_security_group_name" {
+  description = "Name of that security group, for lookup by name"
+  value       = module.vpc.bypass_security_group_name
+}
+
 output "vpc_id" {
   description = "ID of the lab VPC"
   value       = module.vpc.vpc_id

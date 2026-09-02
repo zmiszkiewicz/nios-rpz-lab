@@ -103,6 +103,44 @@ variable "desktop_private_ip" {
   default     = "10.100.0.110"
 }
 
+variable "bypass_private_ip" {
+  description = "Static private IP for the unmanaged host that bypasses the Grid Master"
+  type        = string
+  default     = "10.100.0.120"
+}
+
+###############################################################################
+# Bypass host
+###############################################################################
+
+variable "bypass_instance_type" {
+  description = "Instance type for the unmanaged host. It only runs dig."
+  type        = string
+  default     = "t3.micro"
+}
+
+variable "ubuntu_ami_name_filter" {
+  description = "AMI name filter for the unmanaged host's base image"
+  type        = string
+  default     = "ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*"
+}
+
+variable "bypass_public_resolver" {
+  description = <<-EOT
+    Public DNS service the unmanaged host uses instead of the Grid Master. This
+    is what makes it invisible to the RPZ, and what the participant blocks in
+    the bypass challenge.
+  EOT
+  type        = string
+  default     = "8.8.8.8"
+}
+
+variable "bypass_fallback_resolver" {
+  description = "Second public resolver, so the bypass is not a single point of failure"
+  type        = string
+  default     = "1.1.1.1"
+}
+
 ###############################################################################
 # Sizing and images
 ###############################################################################
