@@ -43,7 +43,8 @@ import time
 
 import domains as D
 from csp_api import get_logger
-from desktop_dns import DesktopUnreachable, explain_failure, probe_desktop
+from desktop_dns import (DesktopUnreachable, explain_failure, probe_desktop,
+                         wait_for_desktop)
 
 log = get_logger("generate_ai_traffic")
 
@@ -160,11 +161,15 @@ def main():
     parser.add_argument("--interval", type=int, default=20,
                         help="Seconds between rounds")
     parser.add_argument("--seed", action="store_true",
-                        help="Setup mode: 4 rounds, 30s apart, quiet per-domain output")
+                        help="Setup mode: wait for the desktop, then 4 rounds 30s apart")
     parser.add_argument("--check", action="store_true",
                         help="Resolve once and report, without the summary framing")
     parser.add_argument("--primary-only", action="store_true",
                         help="Only the five headline domains, not their API domains")
+    parser.add_argument("--wait", action="store_true",
+                        help="Wait for the desktop to answer WinRM before starting")
+    parser.add_argument("--wait-timeout", type=int, default=600,
+                        help="Seconds to wait for the desktop (with --wait)")
     args = parser.parse_args()
 
     rounds = args.rounds
@@ -173,6 +178,17 @@ def main():
 
     if args.seed:
         rounds, interval, quiet = 4, 30, True
+
+    # Seeding runs from setup-shell, straight after the DFP comes up. Windows
+    # takes several minutes longer than that to answer WinRM, so without this
+    # the seed silently generates nothing and challenge 2 opens on an empty
+    # Application Discovery report - a failure with no error attached to it.
+    if args.wait or args.seed:
+        try:
+            wait_for_desktop(timeout=args.wait_timeout)
+        except DesktopUnreachable as exc:
+            log.error("Desktop never answered WinRM: %s", exc)
+            return 1
 
     if args.check:
         try:

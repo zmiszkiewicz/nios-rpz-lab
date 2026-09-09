@@ -110,22 +110,44 @@ and 3 cannot work — see Troubleshooting.
 
 ## Setup order
 
-The order is not arbitrary; each step needs the one before it.
+The order is not arbitrary; each step needs the one before it. It is split
+across two scripts so neither runs long enough to risk the platform's default
+setup timeout — no track in this organisation configures one.
+
+**`track_scripts/setup-shell`**
 
 1. `allocate_sandbox.py` — claim a CSP subtenant, write `sandbox_id.txt`
 2. `provision_tenant.py` — portal user, API key, **join token**
 3. `terraform apply` — needs the join token as `TF_VAR_infoblox_join_token`
 4. `setup_dns.py` — publish `<participant>-desktop.<zone>` for Guacamole
+
+**`01-review-architecture/setup-shell`**
+
 5. `setup_dfp.py` — wait for host registration, then enable the DFP service
 6. `generate_ai_traffic.py --seed` — give Application Discovery something to show
 
-Step 5 cannot be done by Terraform: the DFP service is created against the
+Three things about this worth knowing:
+
+**Step 2 polls rather than sleeps.** The Broker returns as soon as it has
+assigned the subtenant, but the CSP needs a moment before that account can be
+switched into and written to. The other tracks here handle it with a blind
+`sleep 120`; `wait_for_tenant()` polls until an account switch *and* a read
+inside it both succeed, which usually returns in seconds and gives a real
+error when the tenant is genuinely broken.
+
+**Step 5 cannot be done by Terraform.** The DFP service is created against the
 host's pool, and the pool does not exist until the host has registered.
 
-Step 6 runs at setup because Threat Defense has to observe, aggregate and
-classify queries before an application appears under *Needs Review*, and
-Infoblox does not document how long that takes. Seeding means the participant
-opens a populated report instead of waiting on an unquantified pipeline.
+**Step 6 waits for WinRM first.** The queries must come from the desktop —
+Application Discovery attributes applications to the device that asked, and the
+shell container is not a device in the tenant. Windows takes several minutes
+longer to answer WinRM than the DFP takes to come up, so `--seed` blocks on
+`wait_for_desktop()`. Without it the seed silently generates nothing and
+challenge 2 opens on an empty report with no error anywhere.
+
+Both steps 5 and 6 are guarded and the challenge setup script always exits 0. A
+challenge setup script that exits non-zero blocks the participant outright,
+whereas a warning lets them in and the check reports the real cause.
 
 ## Layout
 

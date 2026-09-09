@@ -39,6 +39,18 @@ from csp_api import (CspAuthError, CspError, CspSession, get_logger, read_state,
 
 log = get_logger("provision_tenant")
 
+# How long to wait for a freshly allocated subtenant to become usable.
+#
+# The Broker returns as soon as it has assigned the account, but the CSP needs
+# a moment before that account can be switched into and have objects created
+# in it. The other tracks in this estate handle this with a blind `sleep 120`
+# straight after allocation. Polling is better: it usually returns in a few
+# seconds instead of always costing two minutes, and when the tenant really is
+# broken it says so instead of failing later in a way that looks like a
+# credentials problem.
+TENANT_READY_TIMEOUT = int(os.getenv("TENANT_READY_TIMEOUT", "240"))
+TENANT_READY_INTERVAL = 10
+
 USER_DOMAIN = os.getenv("USER_DOMAIN", "infoblox.lab")
 
 # The lab runs well inside this, but a key that expires mid-track produces a
@@ -49,6 +61,52 @@ API_KEY_EXPIRY = os.getenv("API_KEY_EXPIRY", "2027-12-31T23:59:59.000Z")
 # --------------------------------------------------------------------------- #
 # Portal user
 # --------------------------------------------------------------------------- #
+
+def wait_for_tenant(csp, account_id, timeout=TENANT_READY_TIMEOUT,
+                    interval=TENANT_READY_INTERVAL):
+    """
+    Block until the subtenant can be switched into and read.
+
+    Two things have to work before the tenant is usable: the account switch
+    itself, and a read inside the switched scope. The switch can succeed
+    against an account whose groups have not been created yet, and the next
+    call then fails with something that looks nothing like a propagation
+    problem, so both are checked here.
+    """
+    deadline = time.time() + timeout
+    attempt = 0
+    last = None
+
+    while time.time() < deadline:
+        attempt += 1
+        try:
+            csp.switch_account(account_id)
+            groups = csp.results("/v2/groups")
+            if groups:
+                if attempt > 1:
+                    log.info("Tenant became usable after %d attempt(s)", attempt)
+                return True
+            last = "the account has no groups yet"
+        except (CspAuthError, CspError) as exc:
+            last = str(exc)
+
+        remaining = int(deadline - time.time())
+        log.info("Waiting for the tenant to propagate (attempt %d, %ds left): %s",
+                 attempt, max(remaining, 0), str(last)[:120])
+        time.sleep(interval)
+
+        # switch_account needs a parent-scoped JWT, and the failed attempt may
+        # have left a partially scoped one, so start clean each round.
+        try:
+            csp.login()
+        except CspAuthError:
+            pass
+
+    raise CspAuthError(
+        f"Subtenant {account_id} was still not usable after {timeout}s. "
+        f"Last error: {last}"
+    )
+
 
 def generate_password(length=16):
     """
@@ -199,7 +257,12 @@ def main():
 
     csp = CspSession()
     try:
-        csp.connect(sandbox_id)
+        if args.delete:
+            # Nothing to wait for on the way out.
+            csp.connect(sandbox_id)
+        else:
+            csp.login()
+            wait_for_tenant(csp, sandbox_id)
     except CspAuthError as exc:
         log.error("%s", exc)
         return 1
