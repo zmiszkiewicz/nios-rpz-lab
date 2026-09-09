@@ -166,18 +166,28 @@ else
   bad "a module failed to import (see above)"
 fi
 
-# --- 6b. csp_api regression tests -------------------------------------------
-# Offline, no credentials. These pin down the CSP's inconsistent success
-# codes: switch_account() once accepted only HTTP 200 against an endpoint
-# that answers 201, which rejected 23 consecutive successful responses and
-# surfaced as a four-minute propagation timeout in a live lab start.
-step "csp_api tests"
-if TEST_OUT=$( (cd scripts && python3 test_csp_api.py) 2>&1 ); then
-  ok "$(echo "$TEST_OUT" | grep -c '^  ok') assertions passed"
-else
-  bad "csp_api regression tests failed"
-  echo "$TEST_OUT" | grep -E "FAIL|^  -" | sed 's/^/    /'
-fi
+# --- 6b. regression tests ----------------------------------------------------
+# Offline, no credentials, no tenant. Every assertion here exists because the
+# thing it checks broke a live lab start:
+#
+#   test_csp_api    switch_account() accepted only HTTP 200 against an endpoint
+#                   that answers 201, and the API key expiry was a hardcoded
+#                   date against a rolling ~13 month cap
+#   test_setup_dfp  host readiness required one of four undocumented status
+#                   strings, so a host that had registered fine stalled for
+#                   the full fifteen minutes
+#
+# The common thread is asserting a specific value against an API whose real
+# vocabulary was never confirmed. These tests pin down what was learned.
+step "regression tests"
+for suite in test_csp_api test_setup_dfp; do
+  if TEST_OUT=$( (cd scripts && python3 "${suite}.py") 2>&1 ); then
+    ok "${suite}: $(echo "$TEST_OUT" | grep -c '^  ok') assertions passed"
+  else
+    bad "${suite} failed"
+    echo "$TEST_OUT" | grep -E "^  FAIL|^  -" | sed 's/^/    /'
+  fi
+done
 
 # --- 7. Uncommitted work -----------------------------------------------------
 # The track clones this repo from GitHub at run time. A fix that is only on

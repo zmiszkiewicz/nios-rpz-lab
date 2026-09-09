@@ -101,36 +101,119 @@ def _host_addresses(host):
     return found
 
 
-def host_is_connected(host):
-    """True when the CSP considers the host online."""
-    for key in ("connection_status", "status", "composite_status", "state"):
-        value = str(host.get(key, "")).lower()
-        if value in ("connected", "active", "online", "ready"):
-            return True
-        if value in ("degraded", "error", "disconnected", "pending"):
+# Status values that mean "this will never come good", so stop waiting.
+# Everything else - including a value nobody here has seen before - is treated
+# as possibly-fine, for the reason spelled out in host_is_ready().
+TERMINAL_STATES = ("error", "failed", "disconnected", "terminated", "deleted",
+                   "unavailable")
+
+# Fields that might carry a host's status. Used for reporting, not deciding.
+STATUS_KEYS = ("connection_status", "status", "composite_status", "state",
+               "host_status", "current_state", "desired_state",
+               "configuration_status", "maintenance_mode")
+
+
+def host_status(host):
+    """Every status-looking field the host record actually exposes."""
+    return {key: host[key] for key in STATUS_KEYS
+            if key in host and host[key] not in (None, "")}
+
+
+def host_is_ready(host):
+    """
+    Whether the host is far enough along to attach a service to.
+
+    Deliberately permissive, and that is a correction rather than laziness. An
+    earlier version of this required the status field to equal one of
+    "connected", "active", "online" or "ready" and treated anything else as
+    not-ready. On a real tenant it blocked for the full fifteen minutes on a
+    host that had registered perfectly well, because the actual value was not
+    in that list. detail_hosts is not a documented API and its status
+    vocabulary was never confirmed - the same mistake as checking for HTTP 200
+    on an endpoint that answers 201.
+
+    So this asks the only two questions it can answer honestly:
+
+      * is the host in a state it can never recover from? then stop.
+      * does it have a pool? then a service can be attached to it.
+
+    The authoritative test is whether the DFP service can actually be created,
+    which fails with a real error message. This only has to be good enough to
+    avoid trying absurdly early.
+    """
+    for key, value in host_status(host).items():
+        if str(value).strip().lower() in TERMINAL_STATES:
+            log.warning("Host reports %s=%r, which will not recover", key, value)
             return False
-    # No recognisable status field: treat presence with a pool as good enough,
-    # because the service call is the real test and it fails clearly.
+
     return bool(_pool_id(host))
 
 
 def _pool_id(host):
-    """Raw pool id for a host, or None."""
-    pool = host.get("pool") or {}
-    return pool.get("pool_id") or pool.get("id")
+    """
+    Pool id for a host, searched rather than assumed.
+
+    The reference implementation reads host["pool"]["pool_id"], but that shape
+    is not guaranteed across releases and a missing pool id was what made the
+    old readiness check fail closed. Walking the record for any pool-ish key
+    costs nothing and cannot be wrong in the same way.
+    """
+    pool = host.get("pool")
+    if isinstance(pool, dict):
+        found = pool.get("pool_id") or pool.get("id")
+        if found:
+            return found
+    if isinstance(pool, str) and pool:
+        return pool
+
+    for key in ("pool_id", "poolId"):
+        if host.get(key):
+            return host[key]
+
+    # Last resort: anything nested that looks like a pool reference.
+    result = []
+
+    def walk(node):
+        if result:
+            return
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key in ("pool_id", "poolId") and isinstance(value, str) and value:
+                    result.append(value)
+                    return
+                walk(value)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    walk(host)
+    return result[0] if result else None
+
+
+def describe_host(host):
+    """One line naming the host and whatever the CSP says about it."""
+    name = (host.get("display_name") or host.get("host_name")
+            or host.get("id") or "?")
+    status = host_status(host)
+    rendered = ", ".join(f"{k}={v}" for k, v in status.items()) or "no status fields"
+    return f"{name} ({rendered}, pool={_pool_id(host) or 'none'})"
 
 
 def wait_for_host(csp, timeout=900, interval=20, ip=None):
     """
-    Block until the NIOS-X host registers with the tenant.
+    Block until the NIOS-X host is ready to have a service attached.
 
     A NIOS-X host takes roughly four to eight minutes from instance launch to
-    showing up connected, so the default budget is fifteen minutes. Polling the
-    real signal beats a fixed sleep: it returns as soon as the host is there
-    and it fails loudly if it never arrives.
+    appear. Polling the real signal beats a fixed sleep: it returns as soon as
+    the host is there and it fails loudly if it never arrives.
+
+    What the host reports is logged on the first sighting and whenever it
+    changes, because the status vocabulary here is undocumented and the log is
+    the only way anyone learns what it really says.
     """
     deadline = time.time() + timeout
     attempt = 0
+    last_status = None
 
     while time.time() < deadline:
         attempt += 1
@@ -140,16 +223,38 @@ def wait_for_host(csp, timeout=900, interval=20, ip=None):
             log.debug("detail_hosts not readable yet: %s", exc)
             host = None
 
-        if host and host_is_connected(host):
-            name = host.get("display_name") or host.get("host_name") or host.get("id")
-            log.info("Host registered and connected: %s", name)
-            return host
+        if host:
+            status = host_status(host)
+            if status != last_status:
+                log.info("Host: %s", describe_host(host))
+                last_status = status
+
+            if host_is_ready(host):
+                log.info("Host is ready: %s", describe_host(host))
+                return host
 
         remaining = int(deadline - time.time())
-        state = "not registered" if not host else "registered, not connected yet"
+        state = "not registered" if not host else "registered, no pool yet"
         log.info("Waiting for the NIOS-X host (%s, attempt %d, %ds left)...",
                  state, attempt, max(remaining, 0))
         time.sleep(interval)
+
+    # Say what was actually seen. A bare timeout here previously sent people
+    # looking at join tokens and egress rules when the host had registered fine
+    # and only the readiness predicate was wrong.
+    seen = None
+    try:
+        seen = find_host(csp, ip)
+    except CspError:
+        pass
+
+    if seen:
+        raise TimeoutError(
+            f"The NIOS-X host registered but never became ready within "
+            f"{timeout}s. What the CSP reports: {describe_host(seen)}. "
+            f"Record keys: {', '.join(sorted(seen))}. If it looks healthy, the "
+            f"readiness check in host_is_ready() needs to accept this state."
+        )
 
     raise TimeoutError(
         f"The NIOS-X host did not register within {timeout}s. Check that the "
@@ -308,12 +413,21 @@ def show_status(csp):
         print("  NIOS-X host        NOT REGISTERED")
     else:
         name = host.get("display_name") or host.get("host_name") or host.get("id")
-        state = "connected" if host_is_connected(host) else "not connected"
+        state = "ready" if host_is_ready(host) else "not ready"
         print(f"  NIOS-X host        {name} ({state})")
         addresses = sorted(_host_addresses(host))
         if addresses:
             print(f"  Addresses          {', '.join(addresses)}")
         print(f"  Pool               {_pool_id(host) or 'unknown'}")
+        # Print whatever the CSP actually calls the state. The vocabulary here
+        # is undocumented, and a readiness check that guessed at it cost a
+        # fifteen-minute stall on a host that was fine.
+        status = host_status(host)
+        if status:
+            for key, value in status.items():
+                print(f"    {key:<28} {value}")
+        else:
+            print("    (the host record exposes no status field)")
 
     service = find_dfp_service(csp)
     if not service:
