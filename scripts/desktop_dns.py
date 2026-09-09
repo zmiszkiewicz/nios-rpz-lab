@@ -3,16 +3,18 @@
 Run DNS lookups on the Windows desktop, over WinRM.
 
 The challenge checks have to prove the block from where the participant
-actually experiences it. Querying the Grid Master from the Instruqt shell
-container would not: the lab's security groups deliberately keep port 53 inside
-the VPC so the Grid Master is never an open resolver on the internet.
+actually experiences it. Querying the DFP from the Instruqt shell container
+would not: the lab's security groups deliberately keep port 53 inside the VPC,
+so the proxy is never an open resolver on the internet. It is also the wrong
+vantage point — Threat Defense policy is scoped to the clients behind the DFP,
+and the desktop is the client the lab is about.
 
-Used as a library by verify_rpz.py, and standalone for troubleshooting:
+Used as a library by verify_lab.py, and standalone for troubleshooting:
 
     desktop_dns.py claude.ai www.infoblox.com
     desktop_dns.py --json claude.ai
 
-Environment: DESKTOP_IP, TF_VAR_windows_admin_password, GM_LAN1_PRIVATE_IP.
+Environment: DESKTOP_IP, TF_VAR_windows_admin_password, DFP_PRIVATE_IP.
 """
 
 import json
@@ -20,7 +22,7 @@ import os
 import re
 import sys
 
-from nios_wapi import get_logger
+from csp_api import get_logger
 
 log = get_logger("desktop_dns")
 
@@ -31,13 +33,14 @@ DOMAIN_RE = re.compile(r"^[A-Za-z0-9_*][A-Za-z0-9._*-]{0,252}[A-Za-z0-9]$")
 # "No addresses returned" is not one condition, it is four, and telling them
 # apart is the whole point of this script:
 #
-#   NXDOMAIN  the RPZ matched and refused the name — the lab working
-#   REFUSED   the server answered but will not recurse for us
+#   NXDOMAIN  Threat Defense matched a Block rule — the lab working
+#   REFUSED   the proxy answered but will not serve this client
 #   TIMEOUT   nothing is listening, or the packets are not arriving
-#   SERVFAIL  the server tried and failed
+#   SERVFAIL  the proxy tried and failed, usually upstream
 #
-# An earlier version reported all four as "BLOCKED", which made a dead resolver
-# look like a successful policy. The TCP probe on 53 runs first so we can say
+# An earlier version of this lab reported all four as "BLOCKED", which made a
+# dead resolver look like a successful policy — the single most misleading
+# failure a DNS lab can have. The TCP probe on 53 runs first so we can say
 # "nothing is listening" without inferring it from a lookup failure.
 PS_TEMPLATE = """
 $ErrorActionPreference = "SilentlyContinue"
@@ -131,7 +134,7 @@ def _build_script(domains, server):
 
 def probe_desktop(domains, server=None, host=None, password=None, timeout=90):
     """
-    Resolve each domain from the desktop against the Grid Master.
+    Resolve each domain from the desktop against the DNS Forwarding Proxy.
 
     Returns:
         {
@@ -150,7 +153,7 @@ def probe_desktop(domains, server=None, host=None, password=None, timeout=90):
 
     host = host or os.getenv("DESKTOP_IP")
     password = password or os.getenv("TF_VAR_windows_admin_password")
-    server = server or os.getenv("GM_LAN1_PRIVATE_IP", "10.100.0.11")
+    server = server or os.getenv("DFP_PRIVATE_IP", "10.100.0.200")
 
     if not host:
         raise DesktopUnreachable("DESKTOP_IP is not set — cannot reach the desktop.")
@@ -242,18 +245,21 @@ def explain_failure(probe):
     server = probe.get("server")
 
     if not probe.get("port53_listening"):
-        return (f"Nothing is listening on {server}:53. The DNS service is not running "
-                f"on the Grid Master — start it under Data Management > DNS > Members.")
+        return (f"Nothing is listening on {server}:53. The DFP service is not "
+                f"running on the NIOS-X host. Check it with: "
+                f"python3 setup_dfp.py --status")
     if statuses == {"TIMEOUT"}:
-        return (f"{server} accepted a TCP connection on 53 but did not answer any "
-                f"query. The DNS service is starting, or is not listening on this "
-                f"interface.")
+        return (f"{server} accepted a TCP connection on 53 but answered no query. "
+                f"The DFP service is still starting, or the host registered "
+                f"without the service being enabled.")
     if "REFUSED" in statuses:
-        return (f"{server} refused the queries. Recursion is disabled, or the lab "
-                f"subnet is not in the allow_recursion ACL.")
+        return (f"{server} refused the queries. The DFP is running but is not "
+                f"serving this client, which usually means the host is not fully "
+                f"registered with the CSP yet.")
     if "SERVFAIL" in statuses:
-        return (f"{server} returned SERVFAIL. It is recursing but cannot reach the "
-                f"upstream root servers — check the Grid Master's egress and gateway.")
+        return (f"{server} returned SERVFAIL. The DFP cannot reach Infoblox "
+                f"Threat Defense upstream — check that the NIOS-X host has "
+                f"outbound 443 to csp.infoblox.com.")
     return None
 
 
@@ -284,7 +290,7 @@ def wait_for_desktop(host=None, password=None, timeout=600, interval=20):
 
 _STATUS_LABEL = {
     "RESOLVED": "RESOLVED",
-    "NXDOMAIN": "BLOCKED",    # the RPZ did its job
+    "NXDOMAIN": "BLOCKED",    # Threat Defense matched a Block rule
     "REFUSED":  "REFUSED",
     "TIMEOUT":  "TIMEOUT",
     "SERVFAIL": "SERVFAIL",

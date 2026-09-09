@@ -1,23 +1,23 @@
 ###############################################################################
-# NIOS image
+# NIOS-X image
 ###############################################################################
 
-variable "nios_ami_id" {
+variable "niosx_ami_id" {
   description = <<-EOT
-    AMI ID of the privately shared Infoblox vNIOS image, NOT the AWS Marketplace
-    listing.
+    AMI ID of the privately shared Infoblox NIOS-X image, NOT the AWS
+    Marketplace listing.
 
-    The default is the vNIOS Grid Master image tech-summit-security-niosx uses
-    in eu-central-1, paired there with the same m5.xlarge / IB-V825 combination
-    this lab uses. Every other NIOS lab in this organisation hardcodes its
-    equivalent in a `locals` block; a variable with a default keeps that
-    zero-configuration behaviour while still allowing an override with
-    TF_VAR_nios_ami_id when the image is rotated or the region changes.
+    The default is the NIOS-X image tech-summit-security-niosx uses in
+    eu-central-1, paired there with the same m5.large sizing this lab uses.
+    Every other Infoblox lab in this organisation hardcodes its equivalent in a
+    `locals` block; a variable with a default keeps that zero-configuration
+    behaviour while still allowing an override with TF_VAR_niosx_ami_id when the
+    image is rotated or the region changes.
 
     Region-specific. If you move the lab out of eu-central-1 you must change it.
   EOT
   type        = string
-  default     = "ami-0f223da0ec214a840"
+  default     = "ami-08659b5070b66249d"
 }
 
 ###############################################################################
@@ -30,8 +30,17 @@ variable "windows_admin_password" {
   sensitive   = true
 }
 
-variable "nios_admin_password" {
-  description = "Initial password for the NIOS `admin` account"
+variable "infoblox_join_token" {
+  description = <<-EOT
+    Infoblox CSP join token, the only credential the NIOS-X host is given. It is
+    written into the host's cloud-config and used once, at first boot, to
+    register the host against the tenant that issued it.
+
+    Deliberately has no default: it is tenant-specific and short-lived, and a
+    stale default would produce a host that silently never registers.
+    track_scripts/setup-shell exports it as TF_VAR_infoblox_join_token from an
+    Instruqt secret.
+  EOT
   type        = string
   sensitive   = true
 }
@@ -73,28 +82,23 @@ variable "subnet_cidr" {
 
 variable "management_ingress_cidrs" {
   description = <<-EOT
-    Source CIDRs allowed to reach Grid Manager, SSH, RDP and WinRM. Instruqt's
-    virtual browser and Guacamole containers have no published egress range, so
-    the lab default is open. Narrow it if you run this outside Instruqt.
+    Source CIDRs allowed to reach SSH, RDP and WinRM. Instruqt's virtual browser
+    and Guacamole containers have no published egress range, so the lab default
+    is open. Narrow it if you run this outside Instruqt.
   EOT
   type        = list(string)
   default     = ["0.0.0.0/0"]
 }
 
-variable "nios_mgmt_private_ip" {
-  description = "Static private IP for the Grid Master MGMT interface"
-  type        = string
-  default     = "10.100.0.10"
-}
-
-variable "nios_lan1_private_ip" {
+variable "niosx_private_ip" {
   description = <<-EOT
-    Static private IP for the Grid Master LAN1 interface. This doubles as the
-    resolver address baked into the desktop at boot, so changing it changes
-    what the desktop queries.
+    Static private IP for the NIOS-X host. This doubles as the resolver address
+    baked into the desktop at boot, so changing it changes what the desktop
+    queries. .200 matches the address the other NIOS-X labs in this
+    organisation use, which keeps runbooks interchangeable.
   EOT
   type        = string
-  default     = "10.100.0.11"
+  default     = "10.100.0.200"
 }
 
 variable "desktop_private_ip" {
@@ -103,64 +107,18 @@ variable "desktop_private_ip" {
   default     = "10.100.0.110"
 }
 
-variable "bypass_private_ip" {
-  description = "Static private IP for the unmanaged host that bypasses the Grid Master"
-  type        = string
-  default     = "10.100.0.120"
-}
-
-###############################################################################
-# Bypass host
-###############################################################################
-
-variable "bypass_instance_type" {
-  description = "Instance type for the unmanaged host. It only runs dig."
-  type        = string
-  default     = "t3.micro"
-}
-
-variable "ubuntu_ami_name_filter" {
-  description = "AMI name filter for the unmanaged host's base image"
-  type        = string
-  default     = "ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*"
-}
-
-variable "bypass_public_resolver" {
-  description = <<-EOT
-    Public DNS service the unmanaged host uses instead of the Grid Master. This
-    is what makes it invisible to the RPZ, and what the participant blocks in
-    the bypass challenge.
-  EOT
-  type        = string
-  default     = "8.8.8.8"
-}
-
-variable "bypass_fallback_resolver" {
-  description = "Second public resolver, so the bypass is not a single point of failure"
-  type        = string
-  default     = "1.1.1.1"
-}
-
 ###############################################################################
 # Sizing and images
 ###############################################################################
 
-variable "nios_instance_type" {
-  description = "Instance type for the Grid Master. IB-V825 expects 4 vCPU / 16 GB."
-  type        = string
-  default     = "m5.xlarge"
-}
-
-variable "nios_temp_license" {
+variable "niosx_instance_type" {
   description = <<-EOT
-    NIOS temporary licence tokens for the #infoblox-config user_data.
-
-    The `rpz` token grants DNS Firewall, which is what a Response Policy Zone
-    needs. The other NIOS labs here stop at `cloud` because none of them use
-    RPZ; temporary licensing covers it either way.
+    Instance type for the NIOS-X host. m5.large is the documented minimum for a
+    NIOS-X host running the DNS Forwarding Proxy service, and it is what the
+    other NIOS-X labs here use. Smaller types boot but fail to register.
   EOT
   type        = string
-  default     = "nios IB-V825 enterprise dns dhcp cloud rpz"
+  default     = "m5.large"
 }
 
 variable "desktop_instance_type" {
@@ -173,6 +131,19 @@ variable "windows_ami_name_filter" {
   description = "AMI name filter for the desktop base image"
   type        = string
   default     = "Windows_Server-2022-English-Full-Base-*"
+}
+
+###############################################################################
+# Infoblox portal
+###############################################################################
+
+variable "portal_url" {
+  description = <<-EOT
+    Infoblox Portal URL, dropped on the desktop as a shortcut. Override it if
+    your tenant lives in a regional instance such as csp.eu.infoblox.com.
+  EOT
+  type        = string
+  default     = "https://portal.infoblox.com"
 }
 
 ###############################################################################

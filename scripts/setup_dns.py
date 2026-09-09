@@ -1,25 +1,30 @@
 #!/usr/bin/env python3
 """
-Publish per-participant public DNS names for the Grid Master and the desktop.
+Publish a per-participant public DNS name for the Windows desktop.
 
 Copy-adapted from tech-summit-security-niosx/terraform/scripts/setup_dns.py,
-trimmed from six records to two.
+trimmed from six records to one.
 
-Two names are created in the shared demo Route 53 zone:
+One name is created in the shared demo Route 53 zone:
 
-    <participant-id>-infoblox.<zone>   -> Grid Master Elastic IP
     <participant-id>-desktop.<zone>    -> desktop Elastic IP
 
-The first is what the `infoblox-gm` virtual browser tab in config.yml opens; the
-second is what setup-rdpclient points Guacamole at. Both are written to
-created_fqdn.txt so cleanup_dns_records.py can remove exactly what was added.
+That is what setup-rdpclient points Guacamole at, so the participant gets the
+desktop in a browser tab. It is written to created_fqdn.txt so
+cleanup_dns_records.py can remove exactly what was added.
+
+This lab needs no name for the Infoblox side: Threat Defense is managed at
+portal.infoblox.com, which is a fixed public address, and the NIOS-X host has
+no web interface of its own. An earlier version of this lab ran a NIOS Grid
+Master and published a second <participant-id>-infoblox record for its Grid
+Manager UI; nothing needs it now.
 
 Note the two-account split this inherits from the other labs: lab infrastructure
 lives in the Instruqt AWS sandbox, but the public DNS zone belongs to a separate
 long-lived demo account, reached with the DEMO_* credentials.
 
 Environment: DEMO_AWS_ACCESS_KEY_ID, DEMO_AWS_SECRET_ACCESS_KEY,
-DEMO_HOSTED_ZONE_ID, INSTRUQT_PARTICIPANT_ID, GM_IP, DESKTOP_IP,
+DEMO_HOSTED_ZONE_ID, INSTRUQT_PARTICIPANT_ID, DESKTOP_IP,
 optionally LAB_DNS_ZONE and DEMO_AWS_REGION.
 """
 
@@ -76,7 +81,6 @@ def main():
     zone = os.getenv("LAB_DNS_ZONE", DEFAULT_ZONE)
 
     participant_id = os.getenv("INSTRUQT_PARTICIPANT_ID")
-    gm_ip = os.getenv("GM_IP")
     desktop_ip = os.getenv("DESKTOP_IP")
 
     missing = [name for name, value in (
@@ -84,7 +88,6 @@ def main():
         ("DEMO_AWS_SECRET_ACCESS_KEY", secret_key),
         ("DEMO_HOSTED_ZONE_ID", hosted_zone_id),
         ("INSTRUQT_PARTICIPANT_ID", participant_id),
-        ("GM_IP", gm_ip),
         ("DESKTOP_IP", desktop_ip),
     ) if not value]
 
@@ -94,7 +97,6 @@ def main():
         return 1
 
     records = [
-        (f"{participant_id}-infoblox.{zone}.", gm_ip),
         (f"{participant_id}-desktop.{zone}.", desktop_ip),
     ]
 

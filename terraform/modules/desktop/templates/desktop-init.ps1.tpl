@@ -1,24 +1,28 @@
 <powershell>
 # ---------------------------------------------------------------------------
-# Windows desktop bootstrap for the NIOS RPZ GenAI lab.
+# Windows desktop bootstrap for the Threat Defense GenAI lab.
 #
 # Adapted from tech-summit-security-niosx/terraform/scripts/winrm-init.ps1.tpl,
 # with three additions specific to this lab:
-#   * the resolver is pointed at the NIOS Grid Master's LAN1 address, so every
-#     lookup the participant makes goes through the RPZ;
-#   * DNS-over-HTTPS is switched off in Edge and in the Windows DNS client, so
-#     the block cannot be silently bypassed;
+#   * the resolver is pointed at the NIOS-X DNS Forwarding Proxy, so every
+#     lookup the participant makes is forwarded to Infoblox Threat Defense and
+#     evaluated against the security policy they build in the portal;
+#   * DNS-over-HTTPS is switched off in Edge and in the Windows DNS client. A
+#     browser resolving over DoH goes straight to a public encrypted resolver
+#     and never reaches the DFP, so Threat Defense sees no query at all: no
+#     block, no Insight, and Application Discovery stays empty;
 #   * desktop shortcuts are dropped for the sites the participant will test.
 #
 # Terraform substitutes three variables into this file: admin_password,
-# dns_server_ip and grid_manager_url. Those are the only single-dollar brace
-# expressions allowed here; anything PowerShell needs to expand itself must use
-# a doubled dollar.
+# dns_server_ip and portal_url. Those are the only single-dollar brace
+# expressions allowed here, in comments as much as in code, because
+# templatefile() evaluates them everywhere. Anything PowerShell needs to expand
+# itself must use a doubled dollar.
 # ---------------------------------------------------------------------------
 $ErrorActionPreference = "Continue"
 Start-Transcript -Path "C:\user_data.log" -Append
 
-Write-Host "---- NIOS RPZ lab desktop bootstrap ----"
+Write-Host "---- Threat Defense lab desktop bootstrap ----"
 
 Write-Host "Waiting for the network stack..."
 Start-Sleep -Seconds 30
@@ -61,10 +65,10 @@ foreach ($rule in $ports) {
     }
 }
 
-# --- Point DNS at the NIOS Grid Master --------------------------------------
-# This is what puts the desktop behind the RPZ. Everything else in the lab
-# depends on it, so it is retried rather than attempted once.
-Write-Host "Pointing DNS at the Grid Master at ${dns_server_ip}..."
+# --- Point DNS at the NIOS-X DFP --------------------------------------------
+# This is what puts the desktop behind Threat Defense. Everything else in the
+# lab depends on it, so it is retried rather than attempted once.
+Write-Host "Pointing DNS at the DFP at ${dns_server_ip}..."
 for ($i = 1; $i -le 10; $i++) {
     try {
         $adapter = Get-NetAdapter | Where-Object { $_.Status -eq 'Up' } | Select-Object -First 1
@@ -81,8 +85,9 @@ for ($i = 1; $i -le 10; $i++) {
 }
 
 # --- Disable DNS-over-HTTPS -------------------------------------------------
-# Without this the browser can resolve claude.ai through Cloudflare or Google
-# over 443 and never ask NIOS at all, so the RPZ block appears not to work.
+# Without this the browser resolves claude.ai through Cloudflare or Google over
+# 443 and never asks the DFP, so Threat Defense never sees the query and the
+# policy appears not to work.
 # Belt and braces: Edge policy, Edge's built-in async resolver, and the Windows
 # DNS client's automatic DoH upgrade.
 Write-Host "Disabling DNS-over-HTTPS..."
@@ -118,11 +123,12 @@ try {
     $desktop = "C:\Users\Public\Desktop"
 
     $links = @(
-        @{ Name = "Claude";        Url = "https://claude.ai" },
-        @{ Name = "ChatGPT";       Url = "https://chatgpt.com" },
-        @{ Name = "Gemini";        Url = "https://gemini.google.com" },
-        @{ Name = "Infoblox Docs"; Url = "https://docs.infoblox.com" },
-        @{ Name = "Grid Manager";  Url = "${grid_manager_url}" }
+        @{ Name = "Claude";          Url = "https://claude.ai" },
+        @{ Name = "ChatGPT";         Url = "https://chatgpt.com" },
+        @{ Name = "Gemini";          Url = "https://gemini.google.com" },
+        @{ Name = "Copilot";         Url = "https://copilot.microsoft.com" },
+        @{ Name = "Perplexity";      Url = "https://perplexity.ai" },
+        @{ Name = "Infoblox Portal"; Url = "${portal_url}" }
     )
 
     foreach ($link in $links) {

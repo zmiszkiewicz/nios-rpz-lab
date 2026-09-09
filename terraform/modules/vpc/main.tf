@@ -1,8 +1,10 @@
 ###############################################################################
-# VPC module — networking for the NIOS RPZ GenAI lab
+# VPC module — networking for the Threat Defense GenAI lab
 ###############################################################################
-# One VPC, one public subnet. The subnet is deliberately single-AZ: a vNIOS
-# Grid Master needs its MGMT and LAN1 ENIs in the same availability zone.
+# One VPC, one public subnet, single-AZ. Everything in the lab talks to
+# everything else over private addresses inside that one subnet, and both hosts
+# need outbound internet: the NIOS-X host to reach the Infoblox CSP, the desktop
+# to browse. Nothing here is highly available on purpose.
 ###############################################################################
 
 data "aws_availability_zones" "available" {
@@ -49,27 +51,28 @@ resource "aws_route_table_association" "public" {
 }
 
 ###############################################################################
-# Security group — NIOS Grid Master
+# Security group — NIOS-X DNS Forwarding Proxy
 ###############################################################################
 # Scoped tighter than the other Infoblox labs in this repo, which open DNS to
-# 0.0.0.0/0. Port 53 here is reachable from inside the VPC only, so the Grid
-# Master is never an open resolver on the internet. The challenge checks reach
-# DNS by running the lookup on the desktop over WinRM rather than by querying
-# the GM directly from the Instruqt shell container.
+# 0.0.0.0/0. Port 53 here is reachable from inside the VPC only, so the DFP is
+# never an open resolver on the internet. The challenge checks reach DNS by
+# running the lookup on the desktop over WinRM rather than by querying the DFP
+# directly from the Instruqt shell container.
+#
+# There is no management ingress rule for a UI: a NIOS-X host has no local web
+# interface. It is administered from the Infoblox portal, so the only inbound
+# port beyond DNS is SSH for support access.
+#
+# Egress has to stay wide open. The host needs 443 outbound to csp.infoblox.com
+# to register itself with the join token on first boot, to keep its control
+# channel up, and to forward the queries it receives. Narrowing this is the
+# fastest way to produce a host that never appears in the portal.
 ###############################################################################
 
-resource "aws_security_group" "nios" {
-  name        = "${var.name_prefix}-nios-sg"
-  description = "NIOS Grid Master: Grid Manager UI/WAPI from anywhere, DNS from the VPC only"
+resource "aws_security_group" "niosx" {
+  name        = "${var.name_prefix}-niosx-sg"
+  description = "NIOS-X DFP: DNS from the VPC, outbound to the Infoblox CSP"
   vpc_id      = aws_vpc.main.id
-
-  ingress {
-    description = "Grid Manager UI and WAPI"
-    from_port   = 443
-    to_port     = 443
-    protocol    = "tcp"
-    cidr_blocks = var.management_ingress_cidrs
-  }
 
   ingress {
     description = "Remote console / support access"
@@ -104,25 +107,35 @@ resource "aws_security_group" "nios" {
   }
 
   egress {
-    description = "Recursive resolution and Infoblox services"
+    description = "Registration with the Infoblox CSP and recursive resolution"
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  tags = merge(var.common_tags, { Name = "${var.name_prefix}-nios-sg" })
+  tags = merge(var.common_tags, { Name = "${var.name_prefix}-niosx-sg" })
 }
 
 ###############################################################################
 # Security group — Windows desktop
 ###############################################################################
 # Egress deliberately omits TCP/UDP 853. Security groups are allow-only, so the
-# port is excluded by splitting the range around it. That stops the browser or
-# OS falling back to DNS-over-TLS / DNS-over-QUIC and silently bypassing the
-# RPZ. DoH (443) cannot be excluded the same way without breaking the web, so
-# it is handled on the host — see modules/desktop/templates/desktop-init.ps1.tpl
-# and the DoH bootstrap rules in scripts/domains.py.
+# port is excluded by splitting the range around it: 1-852 and 854-65535.
+#
+# 853 is DNS-over-TLS and DNS-over-QUIC. If the browser or the OS can open it,
+# it resolves against a public encrypted resolver instead of the DFP, the DFP
+# never sees the query, and Threat Defense looks like it is not working — no
+# block page, no Insight, nothing in Application Discovery. Closing the port is
+# what guarantees every lookup on this host is one the DFP forwards.
+#
+# DoH (443) cannot be excluded the same way without breaking the web, so it is
+# handled on the host instead — see
+# modules/desktop/templates/desktop-init.ps1.tpl.
+#
+# AWS restricts rule descriptions to
+# ^[0-9A-Za-z_ .:/()#,@\[\]+=&;{}!$*-]*$ — no em dashes, no apostrophes.
+# Keep every description in this file plain ASCII.
 ###############################################################################
 
 resource "aws_security_group" "desktop" {
@@ -195,58 +208,4 @@ resource "aws_security_group" "desktop" {
   }
 
   tags = merge(var.common_tags, { Name = "${var.name_prefix}-desktop-sg" })
-}
-
-###############################################################################
-# Security group — unmanaged "bypass" host
-###############################################################################
-# Starts with wide-open egress on purpose. This host does not use the Grid
-# Master as its resolver, so it can reach a public DNS service directly and the
-# RPZ never sees its queries. That is the gap the participant discovers.
-#
-# scripts/lock_dns_egress.py then revokes this egress and replaces it with a
-# narrow set that permits port 53 only to the Grid Master, which is how the gap
-# gets closed. The group name is predictable so that script can find it.
-###############################################################################
-
-resource "aws_security_group" "bypass" {
-  name        = "${var.name_prefix}-bypass-sg"
-  description = "Unmanaged host: SSH in, unrestricted egress until the lab locks it down"
-  vpc_id      = aws_vpc.main.id
-
-  ingress {
-    description = "SSH from the Instruqt shell container"
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
-    cidr_blocks = var.management_ingress_cidrs
-  }
-
-  ingress {
-    description = "ICMP from within the VPC"
-    from_port   = -1
-    to_port     = -1
-    protocol    = "icmp"
-    cidr_blocks = [var.vpc_cidr]
-  }
-
-  # AWS restricts rule descriptions to
-  # ^[0-9A-Za-z_ .:/()#,@\[\]+=&;{}!$*-]*$ — no em dashes, no apostrophes.
-  # Keep every description in this file plain ASCII.
-  egress {
-    description = "Unrestricted, including DNS to any public resolver"
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  # lock_dns_egress.py rewrites the egress rules at runtime. Without this,
-  # the next `terraform apply` or a challenge re-check would revert the
-  # participant's remediation.
-  lifecycle {
-    ignore_changes = [egress]
-  }
-
-  tags = merge(var.common_tags, { Name = "${var.name_prefix}-bypass-sg" })
 }

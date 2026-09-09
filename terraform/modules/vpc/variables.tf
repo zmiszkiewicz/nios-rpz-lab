@@ -15,10 +15,9 @@ variable "subnet_cidr" {
 
 variable "management_ingress_cidrs" {
   description = <<-EOT
-    Source CIDRs allowed to reach the Grid Manager UI/WAPI, SSH, RDP and WinRM.
-    Instruqt's virtual browser and Guacamole containers have no stable egress
-    range, so the lab default is 0.0.0.0/0. Narrow this if you run the stack
-    outside Instruqt.
+    Source CIDRs allowed to reach SSH, RDP and WinRM. Instruqt's virtual browser
+    and Guacamole containers have no stable egress range, so the lab default is
+    0.0.0.0/0. Narrow this if you run the stack outside Instruqt.
   EOT
   type        = list(string)
 }

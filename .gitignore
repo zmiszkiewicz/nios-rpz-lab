@@ -13,6 +13,24 @@ created_fqdn.txt
 dns_record_log.txt
 dns_record_cleanup_log.txt
 
+# Written into scripts/ at run time by the sandbox lifecycle scripts.
+# They hold tenant identifiers and credentials for one participant's session
+# and must never be committed.
+scripts/subtenant_id.txt
+scripts/external_id.txt
+scripts/sandbox_id.txt
+scripts/sandbox_name.txt
+scripts/sfdc_account_id.txt
+scripts/sandbox_env.sh
+scripts/user_email.txt
+scripts/user_password.txt
+scripts/user_id.txt
+scripts/api_key.txt
+scripts/join_token.txt
+scripts/policy_id.txt
+scripts/tenant_env.sh
+scripts/discovered_endpoints.txt
+
 # Python
 __pycache__/
 *.pyc

@@ -22,12 +22,12 @@ variable "admin_password" {
 }
 
 variable "dns_server_ip" {
-  description = "Resolver the desktop is pinned to — the Grid Master's LAN1 address"
+  description = "Resolver the desktop is pinned to — the NIOS-X DFP's private address"
   type        = string
 }
 
-variable "grid_manager_url" {
-  description = "Grid Manager URL, dropped on the desktop as a shortcut"
+variable "portal_url" {
+  description = "Infoblox Portal URL, dropped on the desktop as a shortcut"
   type        = string
 }
 

@@ -1,319 +1,176 @@
-# nios-rpz-lab
+# Preventing Shadow AI — lab automation
 
-Terraform and Python backing the Instruqt track **Blocking Generative AI with
-NIOS Response Policy Zones**.
+Terraform and Python for the Instruqt track **Policies for AI Usage:
+Preventing Shadow AI**.
 
-Published at **<https://github.com/zmiszkiewicz/nios-rpz-lab>** and cloned
-anonymously into the Instruqt shell container at track start by
-`track_scripts/setup-shell`. It deploys a vNIOS Grid Master, a Windows
-desktop and an unmanaged Linux host into an AWS sandbox, and provides the WAPI
-tooling the challenge checks use to verify the participant's work.
+This repository is cloned into the Instruqt shell container at run time by
+`track_scripts/setup-shell`. It deploys a NIOS-X host acting as a DNS
+Forwarding Proxy plus a Windows desktop into an AWS sandbox, provisions a
+Cloud Services Portal tenant for the participant, and verifies each challenge.
 
-To point a track at a fork or a branch without editing `setup-shell`, set
-`LAB_REPO_URL` or `LAB_REPO_REF` in the environment.
+> **Repository name.** This repo is still called `nios-rpz-lab` from the
+> earlier version of this track, which taught the same lesson using a NIOS
+> Grid Master and a Response Policy Zone. The lab now uses Infoblox Threat
+> Defense and Application Discovery instead. Nothing depends on the name;
+> renaming it means updating `LAB_REPO_URL` in `setup-shell` and the `workdir`
+> in each challenge's tab definition.
 
----
+## What the lab teaches
 
-## What gets deployed
+Which AI tools are in use on a network, who is using them, and how to enforce
+an organisational decision about them at the DNS layer — with no endpoint
+agent and no change to the network path.
 
-One AWS region, three instances, roughly **$0.28/hour** in eu-central-1.
+The participant does the work in the Infoblox Portal. This repository builds
+the environment that makes it possible and checks the result.
+
+## Architecture
+
+```
+Windows desktop  --DNS-->  NIOS-X DFP  --DNS-->  Infoblox Threat Defense
+  10.100.0.100              10.100.0.200              (SaaS, per-participant tenant)
+```
 
 | Resource | Detail |
 |---|---|
-| VPC | `10.100.0.0/16`, one public subnet `10.100.0.0/24`, IGW, route table |
-| NIOS Grid Master | `m5.xlarge`, privately shared vNIOS AMI, MGMT `10.100.0.10`, LAN1 `10.100.0.11` + EIP |
-| Windows desktop | `t3.medium`, Windows Server 2022, `10.100.0.110` + EIP, resolver pinned to LAN1 |
-| Unmanaged host | `t3.micro`, Ubuntu 22.04, `10.100.0.120` + EIP, resolver pinned to **8.8.8.8** — bypasses the RPZ on purpose |
-| Security groups | One per role — see [Security posture](#security-posture) |
+| VPC | `10.100.0.0/16`, one public subnet `10.100.0.0/24`, single AZ |
+| NIOS-X host | `m5.large`, joins the CSP tenant with a join token in cloud-config, `10.100.0.200` + EIP |
+| Windows desktop | `t3.medium`, Windows Server 2022, resolver pinned to the DFP, DoH disabled, `10.100.0.100` + EIP |
+| CSP tenant | Allocated from the Sandbox Broker pool, with a portal user, an API key and a join token |
 
-Nothing about the RPZ itself is created by Terraform. Building it is the lab.
+Nothing about the AI policy is created by Terraform or by the setup scripts.
+Discovering, classifying and enforcing is the lab.
 
 ## Prerequisites
 
-- An AWS account the Instruqt sandbox can assume, with EC2, VPC and EIP quota
-  for three instances and three Elastic IPs.
-- **A privately shared Infoblox vNIOS AMI in your target region.** Not the AWS
-  Marketplace listing — the lab defaults to the same privately shared image
-  `tech-summit-security-niosx` uses in eu-central-1, so in the normal case there
-  is nothing to do. To use a different one, find it with:
-  ```bash
-  aws ec2 describe-images --region eu-central-1 --owners <infoblox-account-id> \
-    --filters "Name=name,Values=*nios*" --query 'Images[].[ImageId,Name]' --output table
-  ```
-- A **DNS Firewall (RPZ) entitlement**, granted by the `rpz` token in
-  `nios_temp_license`. See [Troubleshooting](#the-rpz-licence).
-- A Route 53 hosted zone in a second, long-lived AWS account for the
-  per-participant public names. This mirrors the `DEMO_*` split every other lab
-  here uses: lab resources go in the throwaway sandbox, public DNS lives
-  somewhere stable.
-- Terraform **1.10.5** — the version `setup-shell` installs and every
-  `*-live-exchange` track in this org pins.
-- Python 3 with `requests`, `boto3`, `pywinrm` (`scripts/requirements.txt`).
+**Organisation-level Instruqt secrets** (shared with the other Infoblox
+tracks, not declared in this track's `config.yml`):
 
-## Required variables and secrets
-
-### Instruqt secrets
-
-All four already exist on the other tracks in this organisation — nothing new
-needs provisioning.
-
-| Secret | Purpose |
+| Secret | Used for |
 |---|---|
-| `TF_VAR_windows_admin_password` | Windows Administrator password; also used for the NIOS `admin` account and by the Guacamole mapping |
-| `DEMO_AWS_ACCESS_KEY_ID` | Credentials for the account owning the public DNS zone |
-| `DEMO_AWS_SECRET_ACCESS_KEY` | " |
-| `DEMO_HOSTED_ZONE_ID` | Route 53 hosted zone ID for the per-participant names |
+| `BROKER_API_TOKEN` | claiming a CSP sandbox from the warm pool |
+| `INFOBLOX_EMAIL` | CSP admin, for provisioning the portal user, API key and join token |
+| `INFOBLOX_PASSWORD` | as above |
 
-| Optional secret | Purpose |
+**Track-level secrets** (declared in `config.yml`):
+
+| Secret | Used for |
 |---|---|
-| `NIOS_AMI_ID` | Overrides `var.nios_ami_id` at runtime. Only worth setting to test a rotated image without a commit. |
+| `TF_VAR_windows_admin_password` | Windows Administrator, WinRM and the Guacamole mapping |
+| `DEMO_AWS_ACCESS_KEY_ID` | the separate demo account that owns the public DNS zone |
+| `DEMO_AWS_SECRET_ACCESS_KEY` | as above |
+| `DEMO_HOSTED_ZONE_ID` | the `iracictechguru.com` hosted zone |
 
-This track does **not** allocate an Infoblox CSP sandbox tenant, so
-`Infoblox_Token`, `INFOBLOX_EMAIL`, `INFOBLOX_PASSWORD` and `BROKER_API_TOKEN`
-are not required. The whole scenario runs on the Grid Master, and dropping the
-tenant allocation removes about eight minutes of propagation sleeps from setup.
+**Subscription.** Application Discovery requires **Infoblox Threat Defense
+Advanced**. If the sandbox pool is provisioned at a lower tier, challenges 2
+and 3 cannot work — see Troubleshooting.
 
-### Terraform variables
+## Setup order
 
-Everything has a default except the two passwords. See
-`terraform/terraform.tfvars.example` for the full set.
+The order is not arbitrary; each step needs the one before it.
 
-| Variable | Set from |
-|---|---|
-| `windows_admin_password` | `TF_VAR_windows_admin_password` |
-| `nios_admin_password` | Defaults to `TF_VAR_windows_admin_password` in `setup-shell` |
-| `nios_ami_id` | Defaults to `ami-0f223da0ec214a840` (see below) |
+1. `allocate_sandbox.py` — claim a CSP subtenant, write `sandbox_id.txt`
+2. `provision_tenant.py` — portal user, API key, **join token**
+3. `terraform apply` — needs the join token as `TF_VAR_infoblox_join_token`
+4. `setup_dns.py` — publish `<participant>-desktop.<zone>` for Guacamole
+5. `setup_dfp.py` — wait for host registration, then enable the DFP service
+6. `generate_ai_traffic.py --seed` — give Application Discovery something to show
 
-### Values to confirm before go-live
+Step 5 cannot be done by Terraform: the DFP service is created against the
+host's pool, and the pool does not exist until the host has registered.
 
-| Value | Where | Why it needs confirming |
-|---|---|---|
-| `nios_ami_id` | `terraform/variables.tf` | Defaults to the vNIOS Grid Master image `tech-summit-security-niosx` uses in eu-central-1. Confirm it is still shared with your account and has not been rotated. |
-| `nios_temp_license` | `terraform/variables.tf` | Carries the `rpz` token for DNS Firewall. Worth a `show license` on the first boot, as with any new licence combination. |
-| `LAB_DNS_ZONE` | `scripts/setup_dns.py`, `track_scripts/setup-rdpclient` | Defaults to `iracictechguru.com`, matching the other labs. |
-| AWS region | `terraform/variables.tf` | Defaults to `eu-central-1`; the AMI is region-specific and must exist there. |
+Step 6 runs at setup because Threat Defense has to observe, aggregate and
+classify queries before an application appears under *Needs Review*, and
+Infoblox does not document how long that takes. Seeding means the participant
+opens a populated report instead of waiting on an unquantified pipeline.
 
 ## Layout
 
 ```
 terraform/
-  main.tf                     root — key pair, module wiring
-  variables.tf                all inputs, three of them required
-  outputs.tf                  consumed by setup-shell via `terraform output -raw`
-  providers.tf                aws ~> 5.20, pinned to Terraform ~> 1.10
-  terraform.tfvars.example
+  main.tf                     key pair, then three modules
+  variables.tf                includes infoblox_join_token (sensitive, no default)
+  outputs.tf                  dfp_*, desktop_*, vpc_id, subnet_id
   modules/
-    vpc/                      VPC, subnet, IGW, routing, all three security groups
-    nios-gm/                  Grid Master: 2 ENIs, EIP on LAN1, #infoblox-config
-    desktop/                  Windows Server 2022 + PowerShell bootstrap
+    vpc/                      VPC, subnet, IGW, route table, 2 security groups
+    niosx-dfp/                NIOS-X host, join token in #cloud-config
+    desktop/                  Windows desktop
       templates/desktop-init.ps1.tpl
-    bypass-host/              Ubuntu host pinned to a public resolver
-      templates/bypass-init.sh.tpl
 
 scripts/
-  nios_wapi.py                WAPI client: version probe, verbs, restart, readiness
-  domains.py                  the blocked domain sets and RPZ object names
-  bootstrap_nios.py           setup-time groundwork: DNS on, recursion, forwarders
-  create_rpz_feed.py          builds the RPZ and all 42 block rules in one command
-  configure_rpz.py            idempotent configuration CLI
-  bypass_host.py              DNS lookups on the unmanaged host, over SSH
-  lock_dns_egress.py          rewrites the bypass host's egress to close the gap
-  verify_rpz.py               per-challenge verification, drives the check scripts
-  desktop_dns.py              runs DNS lookups on the desktop over WinRM
-  wait_for_nios.py            blocks until the Grid Master and desktop are up
-  setup_dns.py                publishes the per-participant Route 53 names
-  cleanup_dns_records.py      removes them again
-  check_sg_descriptions.py    pre-push guard, see below
-  requirements.txt
+  csp_api.py                  shared CSP client: JWT + API key auth, endpoint discovery
+  domains.py                  the five AI applications, their domains and portal names
+
+  allocate_sandbox.py         claim a sandbox from the Broker pool
+  deallocate_sandbox.py       hand it back
+  provision_tenant.py         portal user + API key + join token
+  setup_dfp.py                wait for the host, enable the DFP service
+  setup_dns.py                publish the desktop's public DNS name
+  cleanup_dns_records.py      remove it again
+
+  app_discovery.py            list and classify discovered applications
+  security_policy.py          read and edit the policy's application filter rules
+  generate_ai_traffic.py      drive AI lookups from the desktop
+  desktop_dns.py              DNS lookups on the desktop, over WinRM
+
+  verify_lab.py               the four challenge checks
+  discover_td_api.py          find the real Application Discovery endpoints
+  preflight.sh                run before every push
 ```
 
-## Before pushing a Terraform change
+## Before you push
 
 ```bash
-python3 scripts/check_sg_descriptions.py
+./scripts/preflight.sh
 ```
 
-AWS validates security-group descriptions against
-`^[0-9A-Za-z_ .:/()#,@\[\]+=&;{}!$*-]*$` — no em dashes, no apostrophes.
-`terraform validate` does not catch it, so the failure lands at
-`terraform apply`, which in a track means eight minutes into a start with the
-participant already waiting. This is what a stray em dash in an egress
-description cost once; the guard exists so it cannot happen twice.
+It runs `terraform fmt`, `init`, and — the one that matters — `validate`, which
+evaluates every `templatefile()` call and every provider-side attribute
+validation. It then renders the desktop template and checks the result is
+valid, that variables were substituted, and that DoH is still disabled. It
+also warns about uncommitted or unpushed work, because the track clones this
+repo from GitHub and a fix that only exists on disk will not apply.
 
-## Deploy
-
-Inside Instruqt this is automatic. By hand:
-
-```bash
-cd terraform
-cp terraform.tfvars.example terraform.tfvars   # then fill it in
-terraform init
-terraform apply
-
-export GM_IP=$(terraform output -raw gm_public_ip)
-export GM_LAN1_PRIVATE_IP=$(terraform output -raw gm_lan1_private_ip)
-export DESKTOP_IP=$(terraform output -raw desktop_public_ip)
-export NIOS_ADMIN_PASSWORD='...'
-export TF_VAR_windows_admin_password='...'
-
-cd ../scripts
-python3 wait_for_nios.py          # six to ten minutes
-python3 bootstrap_nios.py         # DNS on, recursion scoped, forwarders set
-python3 create_rpz_feed.py        # the RPZ and every block rule
-python3 lock_dns_egress.py --status
-python3 verify_rpz.py --stage all # smoke-test it
-```
-
-## Teardown
-
-```bash
-cd scripts && python3 cleanup_dns_records.py
-cd ../terraform && terraform destroy -auto-approve
-```
-
-Everything the lab creates is in Terraform state — VPC, subnet, IGW, route
-table, three security groups, three ENIs, three EIPs, the key pair and all three
-instances. There is no CSP tenant to deallocate. The bypass security group's
-egress is rewritten at runtime by `lock_dns_egress.py`, which `terraform
-destroy` handles regardless; `ignore_changes = [egress]` stops a later apply
-reverting the participant's remediation. `track_scripts/cleanup-shell`
-runs both steps and retries the destroy once.
-
-Every resource carries these tags, so anything orphaned is easy to find:
-
-```
-Environment=Lab  Project=NIOS-RPZ-GenAI  ManagedBy=Terraform
-Track=nios-rpz-genai-block  Participant=<instruqt participant id>
-```
-
-## Expected runtime
-
-| Phase | Time |
-|---|---|
-| `terraform apply` | 2–3 min |
-| vNIOS boot, licence, Grid Manager up | 6–10 min |
-| Windows boot and bootstrap | 4–5 min |
-| Unmanaged host boot | <1 min |
-| **Setup total** (waits run in parallel) | **~12 min** |
-| Grid Master bootstrap (DNS, recursion, forwarders) | <1 min |
-| Participant, six challenges | ~45 min |
-| `terraform destroy` | 3–4 min |
-
-Setup runs while the participant reads challenge 1, so the lab fits inside an
-hour. `timelimit` in `track.yml` is 5400s (90 min) for headroom.
-
-## Security posture
-
-Tighter than the sibling NIOS labs in this organisation, in two places, both
-deliberate:
-
-- **Port 53 is reachable from inside the VPC only.** The other labs open it to
-  `0.0.0.0/0`, which makes the Grid Master an open recursive resolver on the
-  public internet — a DNS amplification source. The challenge checks work around
-  the narrower rule by running lookups *on the desktop* over WinRM, which is a
-  more faithful test anyway.
-- **Outbound TCP and UDP 853 are excluded** from the desktop's egress rules, so
-  DNS-over-TLS and DNS-over-QUIC cannot be used to bypass the RPZ. Security
-  groups are allow-only, so this is done by splitting the port range around 853.
-
-The unmanaged host is the deliberate exception: it starts with unrestricted
-egress, including port 53 to any public resolver, because being outside policy
-is the whole point of it. Challenge 5 has the participant close that with
-`lock_dns_egress.py --lock`.
-
-Still open by design, and worth knowing about:
-
-- Grid Manager (443), SSH (22), RDP (3389) and WinRM (5985) accept traffic from
-  `0.0.0.0/0`, because Instruqt's virtual browser and Guacamole containers have
-  no published egress range. Narrow `management_ingress_cidrs` if you run this
-  outside Instruqt.
-- WinRM uses HTTP basic auth. Acceptable on a throwaway instance that exists for
-  under an hour; not a pattern to copy elsewhere.
+Three failures reached a live lab start before this existed: an em dash in a
+security-group description, a `${...}` inside a comment in a `.tpl` file, and a
+fix that was never committed. `terraform fmt` catches none of them.
 
 ## Troubleshooting
 
-### The RPZ licence
+| Symptom | Cause and fix |
+|---|---|
+| `setup_dfp.py` times out waiting for the host | The join token was rejected or the instance has no outbound 443 to `csp.infoblox.com`. Check the instance booted and `provision_tenant.py` produced a token. |
+| Desktop resolves nothing, `port53_listening` false | The DFP service is not running. `python3 setup_dfp.py --status`. |
+| Application Discovery is empty | Either not enough traffic yet (`generate_ai_traffic.py --rounds 3`) or the tenant is not Threat Defense **Advanced**, which the feature requires. |
+| `EndpointNotFound` from `app_discovery.py` | The Application Discovery API paths are unconfirmed — see below. Run `python3 discover_td_api.py`. |
+| Blocks do not take effect | Rule order. `python3 security_policy.py show` — Block must sit above Allow. |
+| Everything is blocked, including the approved tool | The Allow rule is missing or below the Block rule. Same command. |
 
-A local RPZ needs a **DNS Firewall** entitlement, which NIOS licenses under the
-name **RPZ**. Temporary licensing covers it, so the `temp_license` line carries
-the token alongside the others:
+### The unconfirmed API
 
-```
-nios IB-V825 enterprise dns dhcp cloud rpz
-```
+Application Discovery is absent from the published Infoblox API documentation.
+The Threat Defense API guide covers `Atcfw`, `Atcep`, `Atcdfp`, `Tdlad`,
+`TIDEDossier` and `TIDEData`, none of which documents application approval, and
+`/api/atcfw/v1/openapi.json` returns 401 without credentials.
 
-The other NIOS labs in this organisation stop at `cloud` because none of them
-needed DNS Firewall — that is why the token is not visible elsewhere in the
-estate, not a sign that it is unavailable.
+So `app_discovery.py` carries **candidate path lists** resolved against the
+live tenant by `CspSession.discover()` rather than hardcoded URLs. If none
+match, the error names every path tried and what each returned.
 
-**Symptom:** `configure_rpz.py zone` fails, or the Response Policy Zones menu is
-absent in Grid Manager. Confirm the entitlement landed:
-
-```bash
-ssh admin@<gm-ip>          # password is nios_admin_password
-show license
-```
-
-If RPZ is not listed, `nios_temp_license` is a plain string variable, so
-adjusting it needs no code change — set it in `terraform.tfvars` or export
-`TF_VAR_nios_temp_license`. Two models are in use across the other labs if you
-also need to change that: **IB-V825** (tech-summit-security-niosx,
-instruqt-aws-dc-lab-full) and **IB-V926** (app-migration-niosx); bump
-`nios_instance_type` alongside it.
-
-### The Grid Master never answers WAPI
-
-`wait_for_nios.py` gives it fifteen minutes. If it times out:
+To resolve this properly, run against a real tenant:
 
 ```bash
-aws ec2 get-console-output --region eu-central-1 --instance-id $(cd terraform && terraform output -raw gm_instance_id)
+python3 discover_td_api.py           # spec pass + probe pass
+python3 discover_td_api.py --spec    # pull the OpenAPI document and grep it
 ```
 
-Most common causes: the AMI ID is for a different region; the instance type is
-too small for the licensed model; the two ENIs landed in different AZs (they
-cannot — the module uses one subnet, but check if you have edited it).
+With a valid API key the CSP serves its own OpenAPI document, which lists every
+path it implements. Put the winning paths first in the candidate lists in
+`app_discovery.py` and the guesswork is gone.
 
-### The desktop resolves AI domains that should be blocked
+Until then, the classify check degrades to a warning rather than failing a
+participant who did the work correctly in the portal. Set
+`LAB_STRICT_CHECKS=1` to make it fatal while you are fixing the lists.
 
-In order of likelihood:
-
-1. **Cached answer.** `ipconfig /flushdns` on the desktop, and restart Edge,
-   which keeps its own cache.
-2. **DNS not restarted** after the rule change. Grid Manager shows a
-   *Restart Services* banner; it has to be clicked.
-3. **The desktop is not using the Grid Master.** On the desktop run
-   `Get-DnsClientServerAddress`; it should show `10.100.0.11` only. If not, the
-   PowerShell bootstrap failed — check `C:\user_data.log`.
-4. **DoH is back on.** Check
-   `HKLM\SOFTWARE\Policies\Microsoft\Edge\DnsOverHttpsMode` is `off`. The RPZ
-   also blocks the DoH bootstrap names as a backstop.
-
-### Everything is blocked, including the control domain
-
-Recursion is off or the ACL is wrong. `python3 configure_rpz.py status` shows
-both. Re-check that `10.100.0.0/24` is an **Allow** entry under
-`allow_recursion`.
-
-### The desktop never answers WinRM
-
-Windows takes four to five minutes and the bootstrap adds thirty seconds of
-deliberate sleep. If it never comes up, fetch the password directly and RDP in
-to read `C:\user_data.log`:
-
-```bash
-cd terraform
-aws ec2 get-password-data --region eu-central-1 \
-  --instance-id $(terraform output -raw desktop_instance_id) \
-  --priv-launch-key $(terraform output -raw private_key_path)
-```
-
-### A challenge check fails with no explanation
-
-Run the underlying verifier directly — it prints every assertion, not just the
-failing one:
-
-```bash
-cd scripts
-python3 verify_rpz.py --stage rpz
-python3 configure_rpz.py status
-```
+The enforcement check does not depend on any of this: it asserts on DNS
+answers from the desktop, which is the behaviour that actually matters.

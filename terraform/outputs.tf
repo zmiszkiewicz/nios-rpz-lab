@@ -6,24 +6,19 @@
 # editing setup-shell too.
 ###############################################################################
 
-output "gm_public_ip" {
-  description = "Grid Master Elastic IP — Grid Manager UI and WAPI endpoint"
-  value       = module.nios_gm.public_ip
+output "dfp_public_ip" {
+  description = "Elastic IP of the NIOS-X DFP — outbound to the CSP and support access"
+  value       = module.niosx_dfp.public_ip
 }
 
-output "gm_lan1_private_ip" {
-  description = "Grid Master LAN1 private IP — the resolver the desktop points at"
-  value       = module.nios_gm.lan1_private_ip
+output "dfp_private_ip" {
+  description = "Private IP of the NIOS-X DFP — the resolver the desktop points at"
+  value       = module.niosx_dfp.private_ip
 }
 
-output "gm_mgmt_private_ip" {
-  description = "Grid Master MGMT private IP"
-  value       = module.nios_gm.mgmt_private_ip
-}
-
-output "gm_instance_id" {
-  description = "EC2 instance ID of the Grid Master"
-  value       = module.nios_gm.instance_id
+output "dfp_instance_id" {
+  description = "EC2 instance ID of the NIOS-X DFP"
+  value       = module.niosx_dfp.instance_id
 }
 
 output "desktop_public_ip" {
@@ -36,52 +31,12 @@ output "desktop_private_ip" {
   value       = module.desktop.private_ip
 }
 
-output "desktop_instance_id" {
-  description = "EC2 instance ID of the desktop"
-  value       = module.desktop.instance_id
-}
-
-output "bypass_public_ip" {
-  description = "Elastic IP of the unmanaged host — SSH target for the bypass challenge"
-  value       = module.bypass_host.public_ip
-}
-
-output "bypass_private_ip" {
-  description = "Private IP of the unmanaged host"
-  value       = module.bypass_host.private_ip
-}
-
-output "bypass_instance_id" {
-  description = "EC2 instance ID of the unmanaged host"
-  value       = module.bypass_host.instance_id
-}
-
-output "bypass_public_resolver" {
-  description = "The public resolver the unmanaged host uses to bypass the Grid Master"
-  value       = module.bypass_host.public_resolver
-}
-
-output "bypass_security_group_id" {
-  description = "Security group of the unmanaged host — lock_dns_egress.py rewrites its egress"
-  value       = module.vpc.bypass_security_group_id
-}
-
-output "bypass_security_group_name" {
-  description = "Name of that security group, for lookup by name"
-  value       = module.vpc.bypass_security_group_name
-}
-
 output "vpc_id" {
   description = "ID of the lab VPC"
   value       = module.vpc.vpc_id
 }
 
-output "grid_manager_url" {
-  description = "Grid Manager URL over the Elastic IP"
-  value       = module.nios_gm.grid_manager_url
-}
-
-output "private_key_path" {
-  description = "Path to the generated SSH private key"
-  value       = local_sensitive_file.private_key.filename
+output "subnet_id" {
+  description = "ID of the public subnet holding both instances"
+  value       = module.vpc.subnet_id
 }

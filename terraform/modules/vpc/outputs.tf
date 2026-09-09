@@ -4,38 +4,28 @@ output "vpc_id" {
 }
 
 output "subnet_id" {
-  description = "ID of the public subnet holding the Grid Master and the desktop"
+  description = "ID of the public subnet holding the NIOS-X host and the desktop"
   value       = aws_subnet.public.id
 }
 
 output "availability_zone" {
-  description = "AZ of the public subnet — both Grid Master ENIs must land here"
+  description = "AZ of the public subnet — everything in the lab lands here"
   value       = aws_subnet.public.availability_zone
 }
 
 output "subnet_gateway_ip" {
-  description = "First usable address in the subnet, used as the NIOS default gateway"
+  description = "First usable address in the subnet, the default gateway for lab hosts"
   value       = cidrhost(var.subnet_cidr, 1)
 }
 
-output "nios_security_group_id" {
-  description = "Security group for the NIOS Grid Master interfaces"
-  value       = aws_security_group.nios.id
+output "niosx_security_group_id" {
+  description = "Security group for the NIOS-X DFP interface"
+  value       = aws_security_group.niosx.id
 }
 
 output "desktop_security_group_id" {
   description = "Security group for the Windows desktop"
   value       = aws_security_group.desktop.id
-}
-
-output "bypass_security_group_id" {
-  description = "Security group for the unmanaged bypass host"
-  value       = aws_security_group.bypass.id
-}
-
-output "bypass_security_group_name" {
-  description = "Name of the bypass security group — lock_dns_egress.py looks it up by name"
-  value       = aws_security_group.bypass.name
 }
 
 output "internet_gateway_id" {

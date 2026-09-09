@@ -1,91 +1,86 @@
 #!/usr/bin/env python3
 """
-The domain sets this lab enforces on, and the names of the RPZ objects.
+The AI applications this lab governs, and the names the portal knows them by.
 
-Kept in one place so the configure, verify and check paths can never disagree
-about what is supposed to be blocked.
+Kept in one place so the traffic generator, the classification helper, the
+policy builder and the challenge checks can never disagree about what is
+supposed to be approved, unapproved, or left alone.
 
-Why this list is hand-maintained: there is no managed Infoblox RPZ feed that
-carries generative-AI domains for NIOS. The published NIOS feed catalogue is
-Base, Base IP, High/Medium/Low Risk, Informational plus special-purpose feeds
-such as cryptocurrency and public-doh. Generative AI is an *application*
-classification, and application-level control lives in Infoblox Threat Defense
-Cloud, not in a NIOS-consumable feed. A local RPZ is therefore the mechanism —
-see decision 1 in the lab brief.
+Two identifier spaces matter here and they are not interchangeable:
+
+  * DNS domain   — what the workstation actually resolves, and therefore what
+                   the DFP sees and what a block manifests against.
+  * Application  — what Infoblox Threat Defense Application Discovery calls
+    name           the thing after it has classified those queries. Policy is
+                   written against application names, not domains.
+
+A block is enforced per application, but observed per domain. Every script that
+verifies enforcement has to cross that boundary, so both names live together
+in one record.
+
+Application names are what the portal displays. They are matched
+case-insensitively and with a small alias list, because the exact string
+Infoblox uses has changed before (Bard -> Google Gemini) and a lab that hard
+matches one spelling breaks silently when it changes again.
 """
 
 # --------------------------------------------------------------------------- #
-# RPZ object naming
+# The AI applications on the company's list
 # --------------------------------------------------------------------------- #
+# These are the five tools named in the workshop brief. The participant marks
+# one Approved and the rest Unapproved, so the set has to be small enough to
+# click through in the portal without tedium and varied enough that the
+# approved/unapproved split is a real decision.
 
-RPZ_ZONE_FQDN = "genai-block.rpz.local"
-RPZ_ZONE_COMMENT = "Local RPZ blocking public generative AI services"
-DNS_VIEW = "default"
-
-# NIOS represents a "Block Domain Name (No Such Domain)" rule as a
-# record:rpz:cname whose canonical is the empty string.
-BLOCK_NXDOMAIN_CANONICAL = ""
-
-# The domain the participant allow-lists in the final challenge. The narrative
-# is that the business standardised on one approved assistant, so this is the
-# same domain they watched get blocked earlier.
-PASSTHRU_DEFAULT_DOMAIN = "claude.ai"
-
-
-# --------------------------------------------------------------------------- #
-# Generative AI services
-# --------------------------------------------------------------------------- #
-# Apex domains only. configure_rpz.py adds a matching *.<domain> wildcard rule
-# for each, so subdomains such as chat.openai.com are covered without listing
-# them individually.
-
-GENAI_DOMAINS = [
-    {"domain": "claude.ai", "vendor": "Anthropic"},
-    {"domain": "anthropic.com", "vendor": "Anthropic"},
-    {"domain": "chatgpt.com", "vendor": "OpenAI"},
-    {"domain": "openai.com", "vendor": "OpenAI"},
-    {"domain": "gemini.google.com", "vendor": "Google"},
-    {"domain": "bard.google.com", "vendor": "Google"},
-    {"domain": "copilot.microsoft.com", "vendor": "Microsoft"},
-    {"domain": "perplexity.ai", "vendor": "Perplexity"},
-    {"domain": "grok.com", "vendor": "xAI"},
-    {"domain": "x.ai", "vendor": "xAI"},
-    {"domain": "mistral.ai", "vendor": "Mistral"},
-    {"domain": "deepseek.com", "vendor": "DeepSeek"},
-    {"domain": "huggingface.co", "vendor": "Hugging Face"},
-    {"domain": "poe.com", "vendor": "Quora"},
-    {"domain": "midjourney.com", "vendor": "Midjourney"},
+AI_APPLICATIONS = [
+    {
+        "app": "ChatGPT",
+        "domain": "chatgpt.com",
+        "vendor": "OpenAI",
+        "aliases": ["Chat GPT", "OpenAI ChatGPT", "openai.com", "OpenAI"],
+        "extra_domains": ["chat.openai.com", "openai.com"],
+    },
+    {
+        "app": "Claude",
+        "domain": "claude.ai",
+        "vendor": "Anthropic",
+        "aliases": ["Anthropic Claude", "Anthropic", "claude"],
+        "extra_domains": ["anthropic.com"],
+    },
+    {
+        "app": "Google Gemini",
+        "domain": "gemini.google.com",
+        "vendor": "Google",
+        "aliases": ["Gemini", "Bard", "Google Bard"],
+        "extra_domains": ["bard.google.com"],
+    },
+    {
+        "app": "Microsoft Copilot",
+        "domain": "copilot.microsoft.com",
+        "vendor": "Microsoft",
+        "aliases": ["Copilot", "Bing Chat", "Microsoft Bing Chat"],
+        "extra_domains": [],
+    },
+    {
+        "app": "Perplexity",
+        "domain": "perplexity.ai",
+        "vendor": "Perplexity AI",
+        "aliases": ["Perplexity AI", "perplexity"],
+        "extra_domains": [],
+    },
 ]
 
-
-# --------------------------------------------------------------------------- #
-# DNS-over-HTTPS bootstrap names
-# --------------------------------------------------------------------------- #
-# A browser that resolves over DoH never asks NIOS, so the RPZ looks broken.
-# The desktop's Edge and Windows DNS client both have DoH switched off at boot
-# (see modules/desktop/templates/desktop-init.ps1.tpl), and TCP/UDP 853 is
-# excluded from the desktop's egress rules. These rules are the third layer:
-# if something re-enables DoH, it cannot resolve its own resolver.
-#
-# This mirrors what the managed public-doh.rpz.infoblox.local feed does for
-# customers with a Threat Defense subscription.
-
-DOH_BOOTSTRAP_DOMAINS = [
-    {"domain": "cloudflare-dns.com", "vendor": "Cloudflare DoH"},
-    {"domain": "mozilla.cloudflare-dns.com", "vendor": "Cloudflare DoH (Firefox)"},
-    {"domain": "chrome.cloudflare-dns.com", "vendor": "Cloudflare DoH (Chrome)"},
-    {"domain": "dns.google", "vendor": "Google DoH"},
-    {"domain": "dns.quad9.net", "vendor": "Quad9 DoH"},
-    {"domain": "doh.opendns.com", "vendor": "OpenDNS DoH"},
-]
+# The application the narrative standardises on. The business picked one
+# assistant; this is it. Everything else becomes Unapproved.
+DEFAULT_APPROVED_APP = "ChatGPT"
 
 
 # --------------------------------------------------------------------------- #
 # Control domain
 # --------------------------------------------------------------------------- #
-# Must keep resolving throughout. If this stops working the participant has
-# broken recursion rather than configured a policy, and the checks say so
-# instead of reporting a phantom success.
+# Must keep resolving from first boot to last check. If this stops working the
+# participant has broken DNS rather than configured a policy, and every check
+# says so explicitly instead of reporting a block that is really an outage.
 
 CONTROL_DOMAIN = "www.infoblox.com"
 
@@ -94,37 +89,80 @@ CONTROL_DOMAIN = "www.infoblox.com"
 # Accessors
 # --------------------------------------------------------------------------- #
 
-def genai_domains():
-    """Apex generative-AI domains, as plain strings."""
-    return [entry["domain"] for entry in GENAI_DOMAINS]
+def app_names():
+    """Portal application names for every AI tool in the lab."""
+    return [entry["app"] for entry in AI_APPLICATIONS]
 
 
-def doh_domains():
-    """Apex DoH bootstrap domains, as plain strings."""
-    return [entry["domain"] for entry in DOH_BOOTSTRAP_DOMAINS]
+def primary_domains():
+    """One representative domain per application, in brief order."""
+    return [entry["domain"] for entry in AI_APPLICATIONS]
 
 
-def all_blocked_domains(include_doh=True):
-    """Every apex domain the lab expects to be blocked."""
-    domains = genai_domains()
-    if include_doh:
-        domains += doh_domains()
+def all_domains(include_extra=True):
+    """
+    Every domain associated with the AI applications.
+
+    The traffic generator wants this wide list: Application Discovery
+    classifies on the names it observes, and some applications are only
+    recognised once their API or CDN domain has been seen too.
+    """
+    domains = []
+    for entry in AI_APPLICATIONS:
+        domains.append(entry["domain"])
+        if include_extra:
+            domains.extend(entry["extra_domains"])
     return domains
 
 
-def rule_names(domain, zone=RPZ_ZONE_FQDN):
+def entry_for_app(name):
     """
-    The two RPZ record names covering a domain and everything under it.
+    The record for an application, matched on name or alias.
 
-    NIOS names an RPZ rule <target>.<rpz zone>, so a rule for claude.ai in
-    genai-block.rpz.local is called claude.ai.genai-block.rpz.local.
+    Case- and space-insensitive, so "google gemini", "Gemini" and "Bard" all
+    resolve to the same record.
     """
-    return [f"{domain}.{zone}", f"*.{domain}.{zone}"]
+    key = _normalise(name)
+    for entry in AI_APPLICATIONS:
+        if _normalise(entry["app"]) == key:
+            return entry
+        if any(_normalise(alias) == key for alias in entry["aliases"]):
+            return entry
+    return None
 
 
-def vendor_for(domain):
-    """Human-readable owner of a domain, for log lines."""
-    for entry in GENAI_DOMAINS + DOH_BOOTSTRAP_DOMAINS:
-        if entry["domain"] == domain:
-            return entry["vendor"]
-    return "unknown"
+def entry_for_domain(domain):
+    """The record that owns a domain, or None."""
+    key = domain.lower().strip(".")
+    for entry in AI_APPLICATIONS:
+        if key == entry["domain"] or key in entry["extra_domains"]:
+            return entry
+    return None
+
+
+def domains_for_app(name, include_extra=True):
+    """Every domain belonging to one application."""
+    entry = entry_for_app(name)
+    if not entry:
+        return []
+    domains = [entry["domain"]]
+    if include_extra:
+        domains += entry["extra_domains"]
+    return domains
+
+
+def expected_split(approved_app=DEFAULT_APPROVED_APP):
+    """
+    (approved, unapproved) application names for the target end state.
+
+    The checks use this rather than recomputing the split in three places and
+    getting it subtly different in one of them.
+    """
+    entry = entry_for_app(approved_app)
+    approved = entry["app"] if entry else approved_app
+    unapproved = [e["app"] for e in AI_APPLICATIONS if e["app"] != approved]
+    return approved, unapproved
+
+
+def _normalise(value):
+    return "".join((value or "").lower().split())

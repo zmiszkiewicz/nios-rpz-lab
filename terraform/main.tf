@@ -1,31 +1,34 @@
 ###############################################################################
-# Blocking Generative AI with NIOS RPZ — root configuration
+# Blocking Generative AI with Infoblox Threat Defense — root configuration
 ###############################################################################
 # Deploys, in one AWS region:
 #   * a VPC with a single public subnet and two scoped security groups
-#   * a vNIOS Grid Master from a privately shared AMI
-#   * a Windows Server 2022 desktop whose resolver is the Grid Master
+#   * a NIOS-X host that becomes the lab's DNS Forwarding Proxy, registered
+#     against the Infoblox CSP tenant with a join token at first boot
+#   * a Windows Server 2022 desktop whose resolver is that DFP
 #
-# Everything the participant configures — recursion, the Response Policy Zone,
-# the block rules — is done at runtime through Grid Manager or the WAPI scripts
-# in ../scripts. Terraform deliberately does not pre-create any of it; that is
-# the lab's actual content.
+# The DFP is the only thing the lab needs on the infrastructure side: once the
+# desktop's queries are forwarded to Threat Defense, everything the participant
+# configures happens in the Infoblox portal. The security policy, the custom
+# list of generative AI domains, the category filter, the block action, the
+# Insight they inspect afterwards — Terraform pre-creates none of it, because
+# building it is the lab's actual content.
+#
+# The one exception is enabling the DFP service itself, which cannot happen
+# until the host has registered. scripts/setup_dfp.py does that over
+# the API after apply.
 ###############################################################################
 
 locals {
-  name_prefix = "nios-rpz-${var.instruqt_id}"
+  name_prefix = "ibtd-genai-${var.instruqt_id}"
 
   common_tags = {
     Environment = "Lab"
-    Project     = "NIOS-RPZ-GenAI"
+    Project     = "IBTD-GenAI"
     ManagedBy   = "Terraform"
     Track       = "nios-rpz-genai-block"
     Participant = var.instruqt_id
   }
-
-  # Dotted-quad form of the subnet prefix, which is what NIOS wants in its
-  # #infoblox-config block.
-  subnet_netmask = cidrnetmask(var.subnet_cidr)
 }
 
 ###############################################################################
@@ -68,27 +71,24 @@ module "vpc" {
 }
 
 ###############################################################################
-# NIOS Grid Master
+# NIOS-X host — the DNS Forwarding Proxy
 ###############################################################################
 
-module "nios_gm" {
-  source = "./modules/nios-gm"
+module "niosx_dfp" {
+  source = "./modules/niosx-dfp"
 
-  name_prefix       = local.name_prefix
-  nios_ami_id       = var.nios_ami_id
-  instance_type     = var.nios_instance_type
-  temp_license      = var.nios_temp_license
-  admin_password    = var.nios_admin_password
-  subnet_id         = module.vpc.subnet_id
-  security_group_id = module.vpc.nios_security_group_id
-  key_name          = aws_key_pair.lab.key_name
-  mgmt_private_ip   = var.nios_mgmt_private_ip
-  lan1_private_ip   = var.nios_lan1_private_ip
-  subnet_netmask    = local.subnet_netmask
-  gateway_ip        = module.vpc.subnet_gateway_ip
-  common_tags       = local.common_tags
+  name_prefix         = local.name_prefix
+  niosx_ami_id        = var.niosx_ami_id
+  niosx_instance_type = var.niosx_instance_type
+  join_token          = var.infoblox_join_token
+  private_ip          = var.niosx_private_ip
+  subnet_id           = module.vpc.subnet_id
+  security_group_id   = module.vpc.niosx_security_group_id
+  key_name            = aws_key_pair.lab.key_name
+  common_tags         = local.common_tags
 
-  # NIOS needs a default route the moment it boots, or licensing and NTP hang.
+  # The host tries to register with the CSP within seconds of booting, so the
+  # route to the internet gateway has to exist before it starts.
   depends_on = [module.vpc]
 }
 
@@ -103,35 +103,17 @@ module "desktop" {
   windows_ami_name_filter = var.windows_ami_name_filter
   instance_type           = var.desktop_instance_type
   admin_password          = var.windows_admin_password
-  dns_server_ip           = var.nios_lan1_private_ip
-  grid_manager_url        = module.nios_gm.grid_manager_url
+  dns_server_ip           = var.niosx_private_ip
+  portal_url              = var.portal_url
   subnet_id               = module.vpc.subnet_id
   security_group_id       = module.vpc.desktop_security_group_id
   key_name                = aws_key_pair.lab.key_name
   private_ip              = var.desktop_private_ip
   common_tags             = local.common_tags
 
-  depends_on = [module.vpc]
-}
-
-###############################################################################
-# Unmanaged host that bypasses the Grid Master
-###############################################################################
-
-module "bypass_host" {
-  source = "./modules/bypass-host"
-
-  name_prefix            = local.name_prefix
-  ubuntu_ami_name_filter = var.ubuntu_ami_name_filter
-  instance_type          = var.bypass_instance_type
-  private_ip             = var.bypass_private_ip
-  public_resolver        = var.bypass_public_resolver
-  fallback_resolver      = var.bypass_fallback_resolver
-  gm_private_ip          = var.nios_lan1_private_ip
-  subnet_id              = module.vpc.subnet_id
-  security_group_id      = module.vpc.bypass_security_group_id
-  key_name               = aws_key_pair.lab.key_name
-  common_tags            = local.common_tags
-
+  # dns_server_ip is var.niosx_private_ip rather than a module output on
+  # purpose. The desktop only needs the address, not a running DFP, so taking it
+  # from the variable lets the two instances build in parallel instead of
+  # serialising the apply behind the NIOS-X host.
   depends_on = [module.vpc]
 }

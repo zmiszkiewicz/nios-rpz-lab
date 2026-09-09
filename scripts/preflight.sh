@@ -6,15 +6,18 @@
 #
 #   ./scripts/preflight.sh
 #
-# Two real failures got through to a live lab start before this existed:
+# Three real failures got through to a live lab start before this existed:
 #
 #   * an em dash in a security-group description, which AWS rejects
 #     ("doesn't comply with restrictions ^[0-9A-Za-z_ .:/()#,@\[\]+=&;{}!$*-]*$")
 #   * a single-dollar brace expression inside a comment in a .tpl file, which
 #     templatefile() tried to evaluate as an expression
+#   * a fix that was made locally, never committed, and therefore never reached
+#     the GitHub repo the track clones at run time
 #
-# `terraform validate` catches both. `terraform fmt` catches neither — it only
-# checks HCL layout and evaluates nothing. Running fmt alone was the mistake.
+# `terraform validate` catches the first two. `terraform fmt` catches neither —
+# it only checks HCL layout and evaluates nothing. Running fmt alone was the
+# original mistake. The last one is caught by the git check at the end.
 #
 set -uo pipefail
 
@@ -24,6 +27,7 @@ FAILED=0
 step() { printf '\n=== %s ===\n' "$1"; }
 ok()   { printf '  OK    %s\n' "$1"; }
 bad()  { printf '  FAIL  %s\n' "$1"; FAILED=1; }
+warn() { printf '  WARN  %s\n' "$1"; }
 
 # --- 1. HCL formatting -------------------------------------------------------
 step "terraform fmt"
@@ -45,7 +49,7 @@ fi
 
 # --- 3. The check that matters ----------------------------------------------
 # Evaluates every templatefile() call and every provider-side attribute
-# validation, which is where both of the escaped bugs lived.
+# validation, which is where both of the escaped Terraform bugs lived.
 step "terraform validate"
 if OUT=$(terraform -chdir=terraform validate 2>&1); then
   ok "configuration is valid"
@@ -55,8 +59,8 @@ else
 fi
 
 # --- 4. Rendered user_data ---------------------------------------------------
-# validate proves the templates parse; this proves what they produce is a
-# script the target OS can actually run.
+# validate proves the template parses; this proves what it produces is
+# something the target OS can actually run.
 step "rendered user_data"
 
 render() {
@@ -64,44 +68,24 @@ render() {
     | python3 -c "import json,sys; raw=sys.stdin.read().strip(); print(json.loads(json.loads(raw)) if raw.startswith('\"') else raw, end='')"
 }
 
-BYPASS_TPL='templatefile("${path.module}/modules/bypass-host/templates/bypass-init.sh.tpl", {public_resolver="8.8.8.8", fallback_resolver="1.1.1.1", gm_ip="10.100.0.11"})'
-BYPASS_TPL=${BYPASS_TPL//\$\{path.module\}/.}
+DESKTOP_TPL='templatefile("./modules/desktop/templates/desktop-init.ps1.tpl", {admin_password="Sup3rSecret!", dns_server_ip="10.100.0.200", portal_url="https://portal.infoblox.com"})'
 
-if render "$BYPASS_TPL" > /tmp/preflight-bypass.sh 2>/dev/null && [ -s /tmp/preflight-bypass.sh ]; then
-  if bash -n /tmp/preflight-bypass.sh 2>/dev/null; then
-    ok "bypass-init.sh.tpl renders to valid bash"
+if render "$DESKTOP_TPL" > /tmp/preflight-desktop.ps1 2>/dev/null \
+   && [ -s /tmp/preflight-desktop.ps1 ]; then
+
+  if head -1 /tmp/preflight-desktop.ps1 | grep -q '<powershell>' \
+     && grep -q '</powershell>' /tmp/preflight-desktop.ps1; then
+    ok "desktop-init.ps1.tpl renders with its EC2 wrapper intact"
   else
-    bad "bypass-init.sh.tpl renders to invalid bash"
-    bash -n /tmp/preflight-bypass.sh 2>&1 | sed 's/^/    /'
+    bad "desktop-init.ps1.tpl is missing the <powershell> wrapper"
   fi
 
-  # Every helper script the user_data writes onto the host, checked separately:
-  # a broken heredoc body would not show up in the outer script's syntax.
-  python3 - <<'PY'
-import os, re, subprocess, sys, tempfile
-src = open("/tmp/preflight-bypass.sh").read()
-found = 0
-for m in re.finditer(r"cat > (/home/ubuntu/[a-z-]+\.sh) <<'?(\w+)'?\n(.*?)\n\2\n", src, re.S):
-    path, _, body = m.groups(); found += 1
-    with tempfile.NamedTemporaryFile("w", suffix=".sh", delete=False) as f:
-        f.write(body); tmp = f.name
-    r = subprocess.run(["bash", "-n", tmp], capture_output=True, text=True)
-    tag = "OK   " if r.returncode == 0 else "FAIL "
-    print(f"  {tag} helper {os.path.basename(path)}")
-    if r.returncode: print("    " + r.stderr.strip())
-    os.unlink(tmp)
-if found == 0:
-    print("  FAIL  no helper scripts found in the rendered user_data")
-    sys.exit(1)
-PY
-  [ $? -ne 0 ] && FAILED=1
-
   # Look for the variable *names*, not for brace syntax. In rendered output an
-  # escaped expression such as ${status:-TIMEOUT} — which bash is meant to
-  # expand — is shape-identical to an unsubstituted variable, so only the names
-  # distinguish a real failure.
-  leftover=$(grep -nE '\$\{(public_resolver|fallback_resolver|gm_ip)\}' \
-               /tmp/preflight-bypass.sh || true)
+  # escaped expression such as $${env:TEMP} — which PowerShell is meant to
+  # expand — is shape-identical to an unsubstituted variable, so only the
+  # names distinguish a real failure.
+  leftover=$(grep -nE '\$\{(admin_password|dns_server_ip|portal_url)\}' \
+               /tmp/preflight-desktop.ps1 || true)
   if [ -z "$leftover" ]; then
     ok "every template variable was substituted"
   else
@@ -111,31 +95,46 @@ PY
 
   # And the values really did land.
   missing=""
-  for v in 8.8.8.8 1.1.1.1 10.100.0.11; do
-    grep -q "$v" /tmp/preflight-bypass.sh || missing="$missing $v"
+  for v in "10.100.0.200" "portal.infoblox.com"; do
+    grep -q "$v" /tmp/preflight-desktop.ps1 || missing="$missing $v"
   done
   if [ -z "$missing" ]; then
     ok "substituted values present in the output"
   else
     bad "expected values missing from the output:$missing"
   fi
-else
-  bad "could not render bypass-init.sh.tpl"
-fi
 
-DESKTOP_TPL='templatefile("./modules/desktop/templates/desktop-init.ps1.tpl", {admin_password="x", dns_server_ip="10.100.0.11", grid_manager_url="https://example"})'
-if render "$DESKTOP_TPL" > /tmp/preflight-desktop.ps1 2>/dev/null && [ -s /tmp/preflight-desktop.ps1 ]; then
-  if head -1 /tmp/preflight-desktop.ps1 | grep -q '<powershell>' \
-     && grep -q '</powershell>' /tmp/preflight-desktop.ps1; then
-    ok "desktop-init.ps1.tpl renders with its EC2 wrapper intact"
+  # The DFP is useless if the desktop resolves over DoH instead, so the
+  # registry writes that disable it are load-bearing, not hardening.
+  if grep -q "DnsOverHttpsMode" /tmp/preflight-desktop.ps1 \
+     && grep -q "EnableAutoDoh" /tmp/preflight-desktop.ps1; then
+    ok "DNS-over-HTTPS is disabled in the rendered script"
   else
-    bad "desktop-init.ps1.tpl is missing the <powershell> wrapper"
+    bad "the rendered desktop script no longer disables DNS-over-HTTPS, so "\
+"queries can bypass the DFP and Application Discovery will stay empty"
   fi
 else
   bad "could not render desktop-init.ps1.tpl"
 fi
 
-# --- 5. Python ---------------------------------------------------------------
+# --- 5. NIOS-X join token wiring --------------------------------------------
+# The host silently never registers if the cloud-config key is wrong, and the
+# only symptom is a lab that times out waiting for it, so check the shape.
+step "niosx cloud-config"
+NIOSX_MAIN="terraform/modules/niosx-dfp/main.tf"
+if [ -f "$NIOSX_MAIN" ]; then
+  if grep -q "#cloud-config" "$NIOSX_MAIN" \
+     && grep -q "host_setup:" "$NIOSX_MAIN" \
+     && grep -q "jointoken:" "$NIOSX_MAIN"; then
+    ok "user_data carries #cloud-config host_setup/jointoken"
+  else
+    bad "$NIOSX_MAIN is missing the #cloud-config host_setup: jointoken: keys"
+  fi
+else
+  bad "$NIOSX_MAIN not found"
+fi
+
+# --- 6. Python ---------------------------------------------------------------
 step "python"
 if python3 -m py_compile scripts/*.py 2>/dev/null; then
   ok "all scripts compile"
@@ -145,11 +144,58 @@ else
   python3 -m py_compile scripts/*.py 2>&1 | sed 's/^/    /'
 fi
 
+# Every script imports from csp_api; a rename there breaks everything at once
+# and only at run time.
+step "imports"
+if (cd scripts && python3 -c "
+import importlib, sys
+mods = ['csp_api','domains','desktop_dns','app_discovery','security_policy',
+        'setup_dfp','provision_tenant','generate_ai_traffic','verify_lab',
+        'discover_td_api']
+bad = []
+for m in mods:
+    try:
+        importlib.import_module(m)
+    except Exception as e:
+        bad.append(f'{m}: {e}')
+if bad:
+    print('\n'.join(bad)); sys.exit(1)
+" 2>&1); then
+  ok "every module imports cleanly"
+else
+  bad "a module failed to import (see above)"
+fi
+
+# --- 7. Uncommitted work -----------------------------------------------------
+# The track clones this repo from GitHub at run time. A fix that is only on
+# disk does not exist as far as the lab is concerned. This has bitten before.
+step "git"
+if git rev-parse --git-dir >/dev/null 2>&1; then
+  if [ -z "$(git status --porcelain)" ]; then
+    ok "working tree is clean"
+  else
+    warn "uncommitted changes - the track clones from GitHub, so these will NOT apply:"
+    git status --porcelain | sed 's/^/    /'
+  fi
+
+  UPSTREAM=$(git rev-parse --abbrev-ref '@{upstream}' 2>/dev/null || echo "")
+  if [ -n "$UPSTREAM" ]; then
+    AHEAD=$(git rev-list --count "$UPSTREAM"..HEAD 2>/dev/null || echo 0)
+    if [ "$AHEAD" = "0" ]; then
+      ok "pushed to $UPSTREAM"
+    else
+      warn "$AHEAD commit(s) not pushed to $UPSTREAM - run: git push"
+    fi
+  fi
+else
+  warn "not a git repository, skipping"
+fi
+
 # --- Verdict -----------------------------------------------------------------
 printf '\n'
 if [ "$FAILED" -eq 0 ]; then
-  echo "PREFLIGHT PASSED — safe to push."
+  echo "PREFLIGHT PASSED - safe to push."
 else
-  echo "PREFLIGHT FAILED — fix the above before pushing."
+  echo "PREFLIGHT FAILED - fix the above before pushing."
 fi
 exit "$FAILED"
