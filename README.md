@@ -43,23 +43,66 @@ Discovering, classifying and enforcing is the lab.
 
 ## Prerequisites
 
-**Organisation-level Instruqt secrets** (shared with the other Infoblox
-tracks, not declared in this track's `config.yml`):
-
-| Secret | Used for |
-|---|---|
-| `BROKER_API_TOKEN` | claiming a CSP sandbox from the warm pool |
-| `INFOBLOX_EMAIL` | CSP admin, for provisioning the portal user, API key and join token |
-| `INFOBLOX_PASSWORD` | as above |
-
-**Track-level secrets** (declared in `config.yml`):
+**Instruqt secrets.** All of these are declared in the track's `config.yml`.
+Instruqt secrets are per-track: storing a value at the organisation level does
+not deliver it to a track that has not listed it.
 
 | Secret | Used for |
 |---|---|
 | `TF_VAR_windows_admin_password` | Windows Administrator, WinRM and the Guacamole mapping |
+| `BROKER_API_TOKEN` | claiming a CSP subtenant from the Sandbox Broker warm pool |
+| `INFOBLOX_EMAIL` | CSP admin, for the portal user, API key and join token |
+| `INFOBLOX_PASSWORD` | as above |
+| `Infoblox_Token` | parent-account token for `POST /v2/sandbox/accounts`; unused on the happy path, kept for direct subtenant creation if the pool runs dry |
 | `DEMO_AWS_ACCESS_KEY_ID` | the separate demo account that owns the public DNS zone |
 | `DEMO_AWS_SECRET_ACCESS_KEY` | as above |
 | `DEMO_HOSTED_ZONE_ID` | the `iracictechguru.com` hosted zone |
+
+This set matches `infoblox-threat-defense-live-event-exchange`, which is the
+reference for CSP-based tracks in this organisation.
+
+## Where the CSP tenant comes from
+
+Two mechanisms exist in this estate. This lab uses the first.
+
+**Sandbox Broker (used here).** The Broker maintains a warm pool of
+pre-created CSP subtenants. `allocate_sandbox.py` claims one:
+
+```
+POST https://api-sandbox-broker.highvelocitynetworking.com/v1/allocate
+Authorization: Bearer $BROKER_API_TOKEN
+X-Instruqt-Sandbox-ID: <participant id>
+```
+
+It creates nothing — it hands over a tenant that already exists, in about a
+second. `201` means one was taken from the pool, `200` means this participant
+already had one (allocation is idempotent), and `409` means the pool is
+exhausted, which is fatal because retrying cannot conjure a subtenant.
+Deallocation marks it for deletion and a background worker tears it down.
+
+**Direct creation (not used here).** `POST /v2/sandbox/accounts` on the CSP
+creates a real subtenant under the parent account, authenticated with
+`Authorization: token $Infoblox_Token`:
+
+```json
+{ "name": "<participant id>", "state": "active",
+  "admin_user": { "email": "...", "name": "<participant id>" } }
+```
+
+It returns `result.id` (`identity/accounts/<uuid>`) and
+`result.admin_user.account_id`. This is what
+`secure-ai-infoblox/scripts/create_subtenant_infoblox.py` does, and
+`DELETE /v2/sandbox/accounts/{id}` removes it.
+
+It is slower — creation needs propagation time, which is why the tracks using
+it sleep for two minutes afterwards — and it can fail under load, so the
+Broker is preferred. `Infoblox_Token` is declared anyway so that this path is
+available without a secrets change if the pool is ever empty.
+
+In **both** cases the tenant arrives with no interactive user. The
+participant's portal login is created separately, inside the tenant, by
+`provision_tenant.py` via `POST /v2/users` using a JWT that has been
+account-switched into the subtenant.
 
 **Subscription.** Application Discovery requires **Infoblox Threat Defense
 Advanced**. If the sandbox pool is provisioned at a lower tier, challenges 2

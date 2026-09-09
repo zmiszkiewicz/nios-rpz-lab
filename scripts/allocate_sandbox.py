@@ -109,8 +109,20 @@ def allocate():
 
             if resp.status_code == 409:
                 # Pool exhausted is not transient — retrying cannot conjure a
-                # sandbox, so fail fast and let the instructor top up the pool.
-                log("ERROR: Pool exhausted, no sandboxes available")
+                # sandbox, so fail fast with the operator's options rather than
+                # burning five attempts first.
+                log("ERROR: Broker pool exhausted, no CSP sandboxes available.")
+                log("       This is fatal and retrying will not help.")
+                log("")
+                log("       Options:")
+                log("         1. Top up the Broker pool, then restart the track.")
+                log("         2. Create a subtenant directly instead:")
+                log("            POST https://csp.infoblox.com/v2/sandbox/accounts")
+                log("            with 'Authorization: token $Infoblox_Token'.")
+                log("            See create_subtenant_infoblox.py in the")
+                log("            secure-ai-infoblox repo for a working example.")
+                log("            Infoblox_Token is already declared as a secret")
+                log("            on this track for exactly this situation.")
                 sys.exit(1)
 
             if resp.status_code == 403:
