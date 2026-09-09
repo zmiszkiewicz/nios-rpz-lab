@@ -57,28 +57,46 @@ POLICIES_PATH = "/api/atcfw/v1/security_policies"
 
 def find_host(csp, ip=None):
     """
-    The NIOS-X host record, matched on private IP.
+    The NIOS-X host record for this lab.
 
-    Falls back to the only host in the tenant when the IP is not visible in
-    the record, which happens on some CSP releases before the host finishes
-    reporting its interfaces. A sandbox has exactly one host, so that fallback
-    is safe here and would not be in a real deployment.
+    Three strategies, most reliable first:
+
+      1. By join-token name. A host enrolled with a join token is registered as
+         ZTP_<token name>_<suffix>, which is visible in the portal under
+         Configure > Servers as e.g. ZTP_demo-token_... That name is ours by
+         construction, so it beats guessing at addresses.
+      2. By private IP. Correct once the host has reported its interfaces,
+         which does not happen immediately.
+      3. The only host in the tenant. A sandbox has exactly one, so this is
+         safe here in a way it would not be in a real deployment.
+
+    Address matching alone was not enough: the interfaces are absent from the
+    record for the first minutes after registration, exactly when this is
+    being polled.
     """
     ip = ip or DFP_PRIVATE_IP
     hosts = csp.results(HOSTS_PATH)
     if not hosts:
         return None
 
+    token_name = read_state("join_token_name.txt")
+    if token_name:
+        for host in hosts:
+            name = str(host.get("display_name") or host.get("host_name") or "")
+            if token_name.lower() in name.lower():
+                return host
+
     for host in hosts:
         if ip and ip in _host_addresses(host):
             return host
 
     if len(hosts) == 1:
-        log.debug("Host %s not matched by IP, using the only host in the tenant",
-                  ip)
+        log.debug("Host not matched by token name or IP %s, using the only "
+                  "host in the tenant", ip)
         return hosts[0]
 
-    log.warning("%d hosts in the tenant and none has address %s", len(hosts), ip)
+    log.warning("%d hosts in the tenant and none matches token name %r or "
+                "address %s", len(hosts), token_name, ip)
     return None
 
 
@@ -108,9 +126,18 @@ TERMINAL_STATES = ("error", "failed", "disconnected", "terminated", "deleted",
                    "unavailable")
 
 # Fields that might carry a host's status. Used for reporting, not deciding.
+#
+# The portal shows a NIOS-X server's health as two separate things under
+# Configure > Servers - "Platform Management: Online" and "Application
+# Management: Online" - plus an overall Status and a Last Seen timestamp. So
+# there is no single field to read even if the vocabulary were documented,
+# which is the other half of why host_is_ready() does not try.
 STATUS_KEYS = ("connection_status", "status", "composite_status", "state",
                "host_status", "current_state", "desired_state",
-               "configuration_status", "maintenance_mode")
+               "configuration_status", "maintenance_mode",
+               "platform_status", "platform_management",
+               "application_status", "application_management",
+               "composite_state", "last_seen", "version")
 
 
 def host_status(host):

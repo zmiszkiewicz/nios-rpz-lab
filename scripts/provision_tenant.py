@@ -301,8 +301,14 @@ def main():
 
     # --- 3. join token ------------------------------------------------------
     log.info("--- 3/3 join token ---")
-    join_token = create_join_token(csp)
+    # The token name is persisted as well as the token. A host enrolled with a
+    # join token registers as ZTP_<token name>_<suffix>, so this is how
+    # setup_dfp.py identifies our host without depending on an IP that is not
+    # in the record for the first few minutes after registration.
+    token_name = f"instruqt-{sandbox_name}"
+    join_token = create_join_token(csp, name=token_name)
     write_state("join_token.txt", join_token)
+    write_state("join_token_name.txt", token_name)
 
     # --- exports ------------------------------------------------------------
     # setup-shell sources this rather than parsing the log, and Terraform reads

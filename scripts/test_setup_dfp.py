@@ -135,6 +135,55 @@ def test_describe_host_is_useful_on_failure():
           "describe_host says so when there are no status fields")
 
 
+def test_find_host_strategy_order():
+    """
+    Token name beats IP beats sole-host.
+
+    A host enrolled with a join token registers as ZTP_<token name>_<suffix>,
+    which is ours by construction. Matching on the IP alone was not enough:
+    the interfaces are absent from the record for the first minutes after
+    registration, which is exactly when this gets polled.
+    """
+    import os
+    import tempfile
+
+    state = tempfile.mkdtemp()
+    os.environ["LAB_STATE_DIR"] = state
+    with open(os.path.join(state, "join_token_name.txt"), "w") as fh:
+        fh.write("instruqt-lab-0144\n")
+
+    class Csp:
+        def __init__(self, hosts): self.hosts = hosts
+        def results(self, path): return self.hosts
+
+    mine = {"display_name": "ZTP_instruqt-lab-0144_xyz",
+            "pool": {"pool_id": "p-mine"}}
+    other = {"display_name": "someone-else", "ip_address": "10.100.0.200",
+             "pool": {"pool_id": "p-other"}}
+
+    got = setup_dfp.find_host(Csp([other, mine]))
+    check(setup_dfp._pool_id(got) == "p-mine",
+          "token name wins even when another host matches the IP")
+
+    # No token name on disk: fall back to IP.
+    os.remove(os.path.join(state, "join_token_name.txt"))
+    got = setup_dfp.find_host(Csp([{"display_name": "x", "pool": {"pool_id": "p-x"}},
+                                   other]))
+    check(setup_dfp._pool_id(got) == "p-other", "falls back to matching the IP")
+
+    # Neither: a single host is accepted.
+    got = setup_dfp.find_host(Csp([mine]))
+    check(setup_dfp._pool_id(got) == "p-mine", "falls back to the only host")
+
+    # Neither, and several hosts: refuse to guess.
+    got = setup_dfp.find_host(Csp([{"display_name": "a", "pool": {"pool_id": "1"}},
+                                   {"display_name": "b", "pool": {"pool_id": "2"}}]))
+    check(got is None, "refuses to guess between several unmatched hosts")
+
+    check(setup_dfp.find_host(Csp([])) is None, "no hosts yields None")
+    os.environ.pop("LAB_STATE_DIR", None)
+
+
 def test_host_addresses_finds_nested_ips():
     host = {"interfaces": [{"addresses": [{"address": "10.100.0.200/24"}]}],
             "ip_address": "1.2.3.4"}

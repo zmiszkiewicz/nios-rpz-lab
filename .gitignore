@@ -27,6 +27,7 @@ scripts/user_password.txt
 scripts/user_id.txt
 scripts/api_key.txt
 scripts/join_token.txt
+scripts/join_token_name.txt
 scripts/policy_id.txt
 scripts/tenant_env.sh
 scripts/discovered_endpoints.txt
