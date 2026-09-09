@@ -53,9 +53,11 @@ TENANT_READY_INTERVAL = 10
 
 USER_DOMAIN = os.getenv("USER_DOMAIN", "infoblox.lab")
 
-# The lab runs well inside this, but a key that expires mid-track produces a
-# baffling failure, so it is set far out rather than cleverly.
-API_KEY_EXPIRY = os.getenv("API_KEY_EXPIRY", "2027-12-31T23:59:59.000Z")
+# How long the API key should live, in days. Computed relative to now by
+# csp_api rather than hardcoded as a date: the CSP enforces a rolling ceiling
+# of roughly thirteen months, so any literal is either rejected today or in the
+# past eventually. Thirty days is far more than a 90-minute lab needs.
+API_KEY_DAYS = int(os.getenv("API_KEY_DAYS", "30"))
 
 
 # --------------------------------------------------------------------------- #
@@ -294,7 +296,7 @@ def main():
 
     # --- 2. API key ---------------------------------------------------------
     log.info("--- 2/3 API key ---")
-    api_key = csp.create_api_key(name="Instruqt", expires_at=API_KEY_EXPIRY)
+    api_key = csp.create_api_key(name="Instruqt", lifetime_days=API_KEY_DAYS)
     write_state("api_key.txt", api_key)
 
     # --- 3. join token ------------------------------------------------------

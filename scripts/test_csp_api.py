@@ -129,6 +129,75 @@ def test_create_api_key_accepts_every_2xx():
         check(ok, f"create_api_key accepts HTTP {code}")
 
 
+def test_api_key_expiry_is_relative_and_within_the_cap():
+    """
+    A hardcoded expiry is wrong in both directions.
+
+    2027-12-31 was rejected with "expiration date cannot be later than
+    2027-10-09" - a rolling ~13 month cap, so no literal stays valid.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    stamp = csp_api._iso_days_from_now(30)
+    parsed = datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%S.000Z").replace(
+        tzinfo=timezone.utc)
+    now = datetime.now(timezone.utc)
+
+    check(parsed > now, "computed expiry is in the future")
+    check(parsed < now + timedelta(days=31), "computed expiry is ~30 days out")
+    check(parsed < now + timedelta(days=390),
+          "computed expiry is inside the CSP 13-month cap")
+    check(stamp.endswith("Z") and ".000Z" in stamp,
+          "expiry format matches what the CSP accepts")
+
+
+def test_expiry_ceiling_parsed_from_the_real_error():
+    """The verbatim rejection from the failing lab start."""
+    body = ('{"error":[{"message":"HTTP interceptor error: expiration date '
+            'cannot be later than 2027-10-09"}]}')
+    ceiling = csp_api._expiry_ceiling(body)
+    check(ceiling is not None, "ceiling extracted from the CSP error")
+    check(ceiling is not None and ceiling.startswith("2027-10-08"),
+          f"ceiling backs off a day from the stated cap (got {ceiling})")
+
+    check(csp_api._expiry_ceiling('{"error":"something else"}') is None,
+          "unrelated errors yield no ceiling")
+    check(csp_api._expiry_ceiling("") is None, "empty body yields no ceiling")
+    check(csp_api._expiry_ceiling("later than not-a-date") is None,
+          "unparseable date yields no ceiling")
+
+
+def test_create_api_key_retries_against_the_cap():
+    """A capped expiry must self-heal rather than fail the lab."""
+    class CappingSession:
+        def __init__(self):
+            self.attempts = []
+
+        def post(self, url, **kwargs):
+            expires = kwargs["json"]["expires_at"]
+            self.attempts.append(expires)
+            if len(self.attempts) == 1:
+                return FakeResponse(400, text=(
+                    '{"error":[{"message":"expiration date cannot be later '
+                    'than 2027-10-09"}]}'))
+            return FakeResponse(201, {"result": {"key": "healed"}})
+
+    csp = csp_api.CspSession(email="lab@example.com", password="x")
+    csp.session = CappingSession()
+    csp.jwt = "jwt"
+
+    try:
+        key = csp.create_api_key(lifetime_days=5000)
+    except csp_api.CspError:
+        key = None
+
+    check(key == "healed", "create_api_key retries with the capped expiry")
+    check(len(csp.session.attempts) == 2, "exactly one retry was made")
+    check(len(csp.session.attempts) == 2
+          and csp.session.attempts[1].startswith("2027-10-08"),
+          "the retry used the ceiling from the error")
+
+
 def test_unwrap_handles_every_envelope():
     """The CSP uses results, result, a bare list, and sometimes items."""
     cases = [

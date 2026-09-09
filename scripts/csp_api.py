@@ -36,8 +36,10 @@ labs:
 import json
 import logging
 import os
+import re
 import sys
 import time
+from datetime import datetime, timedelta, timezone
 
 import requests
 
@@ -200,23 +202,41 @@ class CspSession:
         self.switch_account(account_id)
         return self
 
-    def create_api_key(self, name="Instruqt", expires_at="2027-12-31T23:59:59.000Z"):
+    def create_api_key(self, name="Instruqt", expires_at=None, lifetime_days=30):
         """
         Mint an API key inside the currently scoped account.
 
         Stores it on the session so subsequent calls prefer it, and returns the
         raw key. The caller is responsible for persisting it.
+
+        The expiry is computed relative to now rather than hardcoded. A fixed
+        date is wrong in both directions: too far in the future and the CSP
+        rejects it outright, too near and it silently drifts into the past as
+        the lab ages. An earlier version of this used 2027-12-31 and was
+        refused with
+
+            expiration date cannot be later than 2027-10-09
+
+        which is a rolling cap of roughly thirteen months, not a fixed date, so
+        no literal could have been correct for long. Thirty days is far more
+        than a 90-minute lab needs and comfortably inside any cap.
+
+        If the CSP still objects, the ceiling it names in the error is parsed
+        out and used, so a tightened cap self-heals instead of failing a lab.
         """
         if not self.jwt:
             raise CspAuthError("create_api_key needs a JWT; call connect() first.")
 
-        r = self.session.post(
-            f"{self.base_url}/v2/current_api_keys",
-            headers={"Authorization": f"Bearer {self.jwt}",
-                     "Content-Type": "application/json"},
-            json={"name": name, "expires_at": expires_at},
-            timeout=self.timeout,
-        )
+        expires_at = expires_at or _iso_days_from_now(lifetime_days)
+        r = self._post_api_key(name, expires_at)
+
+        if not _ok(r) and r.status_code == 400:
+            ceiling = _expiry_ceiling(r.text)
+            if ceiling:
+                log.warning("CSP capped the API key expiry at %s, retrying", ceiling)
+                expires_at = ceiling
+                r = self._post_api_key(name, expires_at)
+
         if not _ok(r):
             raise CspError("POST", "/v2/current_api_keys", r.status_code, r.text)
 
@@ -226,8 +246,19 @@ class CspSession:
                            "response contained no key")
 
         self.api_key = key
-        log.info("Created API key %r in account %s", name, self.account_id or "current")
+        log.info("Created API key %r in account %s (expires %s)",
+                 name, self.account_id or "current", expires_at)
         return key
+
+    def _post_api_key(self, name, expires_at):
+        """One create-key attempt. Returns the raw response for the caller."""
+        return self.session.post(
+            f"{self.base_url}/v2/current_api_keys",
+            headers={"Authorization": f"Bearer {self.jwt}",
+                     "Content-Type": "application/json"},
+            json={"name": name, "expires_at": expires_at},
+            timeout=self.timeout,
+        )
 
     # -- verbs --------------------------------------------------------------- #
 
@@ -395,6 +426,40 @@ class CspSession:
 # --------------------------------------------------------------------------- #
 # Helpers
 # --------------------------------------------------------------------------- #
+
+def _iso_days_from_now(days):
+    """
+    An ISO-8601 UTC timestamp `days` from now, in the form the CSP wants.
+
+    Milliseconds and a trailing Z, matching the format the working reference
+    scripts in this organisation send.
+    """
+    when = datetime.now(timezone.utc) + timedelta(days=days)
+    return when.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+
+# "expiration date cannot be later than 2027-10-09"
+_CEILING_RE = re.compile(r"later than\s+(\d{4}-\d{2}-\d{2})")
+
+
+def _expiry_ceiling(body):
+    """
+    The maximum expiry date named in a CSP rejection, as a timestamp.
+
+    Returns None if the error is about something else. Backs off by a day from
+    the stated ceiling, because a cap expressed as a date is ambiguous about
+    whether that day itself is inclusive, and being a day early costs nothing.
+    """
+    match = _CEILING_RE.search(body or "")
+    if not match:
+        return None
+    try:
+        ceiling = datetime.strptime(match.group(1), "%Y-%m-%d").replace(
+            tzinfo=timezone.utc) - timedelta(days=1)
+    except ValueError:
+        return None
+    return ceiling.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
 
 def _api_key_from_env():
     for name in ("TF_VAR_ddi_api_key", "BLOXONE_API_KEY", "CSP_API_KEY",
