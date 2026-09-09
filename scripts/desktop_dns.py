@@ -47,10 +47,17 @@ $ErrorActionPreference = "SilentlyContinue"
 Clear-DnsClientCache
 $server = "__SERVER__"
 
+# TCP 53 reachability, with an explicit short timeout.
+#
+# A raw TcpClient rather than Test-NetConnection: the timeout is ours to set,
+# it does not depend on a cmdlet being present, and it returns in three
+# seconds instead of however long the cmdlet decides to wait.
 $listening = $false
 try {
-    $listening = (Test-NetConnection -ComputerName $server -Port 53 `
-                    -InformationLevel Quiet -WarningAction SilentlyContinue)
+    $client = New-Object System.Net.Sockets.TcpClient
+    $async = $client.BeginConnect($server, 53, $null, $null)
+    $listening = $async.AsyncWaitHandle.WaitOne(3000, $false) -and $client.Connected
+    $client.Close()
 } catch {
     $listening = $false
 }
@@ -64,31 +71,46 @@ try {
     $configured = @()
 }
 
+# If nothing is listening, do not attempt the lookups.
+#
+# Every Resolve-DnsName against a dead resolver waits out its own retry
+# schedule, so a ten-domain run against a DFP that is not up took longer than
+# the WinRM operation timeout and the whole call hung. There is also nothing to
+# learn from ten identical timeouts that the TCP probe has not already told us.
 $results = @()
-foreach ($d in @(__DOMAINS__)) {
-    $err = $null
-    $addresses = @()
-    $answer = Resolve-DnsName -Name $d -Type A -Server $server -DnsOnly `
-                -ErrorAction SilentlyContinue -ErrorVariable err
-    if ($answer) {
-        $addresses = @($answer | Where-Object { $_.IPAddress } | ForEach-Object { $_.IPAddress })
-    }
-    $msg = ""
-    if ($err -and $err.Count -gt 0) {
-        $msg = $err[0].Exception.Message
-        if (-not $msg) { $msg = $err[0].ToString() }
-    }
-    $results += [pscustomobject]@{
-        domain    = $d
-        resolved  = ($addresses.Count -gt 0)
-        addresses = $addresses
-        error     = $msg
+$skipped = $false
+
+if (-not $listening) {
+    $skipped = $true
+} else {
+    foreach ($d in @(__DOMAINS__)) {
+        $err = $null
+        $addresses = @()
+        # -QuickTimeout bounds each query to roughly a second per server
+        # instead of the default multi-second retry schedule.
+        $answer = Resolve-DnsName -Name $d -Type A -Server $server -DnsOnly `
+                    -QuickTimeout -ErrorAction SilentlyContinue -ErrorVariable err
+        if ($answer) {
+            $addresses = @($answer | Where-Object { $_.IPAddress } | ForEach-Object { $_.IPAddress })
+        }
+        $msg = ""
+        if ($err -and $err.Count -gt 0) {
+            $msg = $err[0].Exception.Message
+            if (-not $msg) { $msg = $err[0].ToString() }
+        }
+        $results += [pscustomobject]@{
+            domain    = $d
+            resolved  = ($addresses.Count -gt 0)
+            addresses = $addresses
+            error     = $msg
+        }
     }
 }
 
 ConvertTo-Json -Compress -Depth 5 -InputObject ([pscustomobject]@{
     server            = $server
     port53_listening  = $listening
+    lookups_skipped   = $skipped
     configured_dns    = @($configured)
     results           = @($results)
 })
@@ -132,7 +154,19 @@ def _build_script(domains, server):
     return PS_TEMPLATE.replace("__DOMAINS__", quoted).replace("__SERVER__", server)
 
 
-def probe_desktop(domains, server=None, host=None, password=None, timeout=90):
+def winrm_timeout_for(domains, base=45, per_domain=6):
+    """
+    A WinRM read timeout that scales with the work being asked for.
+
+    A fixed 90 seconds was fine for two domains and not for ten. With
+    -QuickTimeout each lookup costs about a second when it fails and less when
+    it succeeds, so six seconds each is generous, and the base covers the
+    cache flush, the TCP probe and the adapter query.
+    """
+    return max(base + per_domain * len(domains), 60)
+
+
+def probe_desktop(domains, server=None, host=None, password=None, timeout=None):
     """
     Resolve each domain from the desktop against the DNS Forwarding Proxy.
 
@@ -154,6 +188,7 @@ def probe_desktop(domains, server=None, host=None, password=None, timeout=90):
     host = host or os.getenv("DESKTOP_IP")
     password = password or os.getenv("TF_VAR_windows_admin_password")
     server = server or os.getenv("DFP_PRIVATE_IP", "10.100.0.200")
+    timeout = timeout or winrm_timeout_for(domains)
 
     if not host:
         raise DesktopUnreachable("DESKTOP_IP is not set — cannot reach the desktop.")
@@ -216,6 +251,10 @@ def probe_desktop(domains, server=None, host=None, password=None, timeout=90):
     return {
         "server": payload.get("server") or server,
         "port53_listening": bool(payload.get("port53_listening")),
+        # True when the lookups were deliberately not attempted because
+        # nothing was listening on 53. Distinguishes "we did not ask" from
+        # "we asked and got nothing", which are different diagnoses.
+        "lookups_skipped": bool(payload.get("lookups_skipped")),
         "configured_dns": list(configured),
         "results": results,
     }
@@ -326,10 +365,15 @@ def main():
     print(f"  TCP {server}:53   : {'listening' if probe['port53_listening'] else 'NOT LISTENING'}")
     print()
 
-    for domain, result in probe["results"].items():
-        label = _STATUS_LABEL.get(result["status"], result["status"])
-        detail = ", ".join(result["addresses"]) if result["resolved"] else result["error"]
-        print(f"  {label:10s} {domain:32s} {detail[:70]}")
+    if probe.get("lookups_skipped"):
+        print("  Lookups were not attempted: nothing is listening on port 53,")
+        print("  so every query would only have waited out its own timeout.")
+    else:
+        for domain, result in probe["results"].items():
+            label = _STATUS_LABEL.get(result["status"], result["status"])
+            detail = (", ".join(result["addresses"]) if result["resolved"]
+                      else result["error"])
+            print(f"  {label:10s} {domain:32s} {detail[:70]}")
 
     reason = explain_failure(probe)
     if reason:

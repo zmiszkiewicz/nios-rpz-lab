@@ -170,17 +170,22 @@ fi
 # Offline, no credentials, no tenant. Every assertion here exists because the
 # thing it checks broke a live lab start:
 #
-#   test_csp_api    switch_account() accepted only HTTP 200 against an endpoint
-#                   that answers 201, and the API key expiry was a hardcoded
-#                   date against a rolling ~13 month cap
-#   test_setup_dfp  host readiness required one of four undocumented status
-#                   strings, so a host that had registered fine stalled for
-#                   the full fifteen minutes
+#   test_csp_api      switch_account() accepted only HTTP 200 against an
+#                     endpoint that answers 201, and the API key expiry was a
+#                     hardcoded date against a rolling ~13 month cap
+#   test_setup_dfp    host readiness required one of four undocumented status
+#                     strings, so a host that had registered fine stalled for
+#                     the full fifteen minutes
+#   test_desktop_dns  a ten-domain run against a DFP that was not serving
+#                     outlived the WinRM timeout, because each lookup waited
+#                     out its own retry schedule. Looked like a hang.
 #
-# The common thread is asserting a specific value against an API whose real
-# vocabulary was never confirmed. These tests pin down what was learned.
+# The common thread is asserting a specific value, or an unbounded wait,
+# against a system whose real behaviour was never confirmed. These tests pin
+# down what was learned. The desktop suite also checks the PowerShell renders
+# and balances, because it cannot be executed on the machine that writes it.
 step "regression tests"
-for suite in test_csp_api test_setup_dfp; do
+for suite in test_csp_api test_setup_dfp test_desktop_dns; do
   if TEST_OUT=$( (cd scripts && python3 "${suite}.py") 2>&1 ); then
     ok "${suite}: $(echo "$TEST_OUT" | grep -c '^  ok') assertions passed"
   else

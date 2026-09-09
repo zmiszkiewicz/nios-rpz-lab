@@ -80,6 +80,26 @@ def generate(rounds=1, interval=20, quiet=False, include_extra=True):
     PowerShell in desktop_dns.
     """
     targets = D.all_domains(include_extra=include_extra) + [D.CONTROL_DOMAIN]
+
+    # Confirm the resolver is alive before committing to several rounds.
+    #
+    # Without this, a DFP that is not up turned the seeding run into minutes of
+    # nothing: every lookup waited out its retry schedule and the whole WinRM
+    # call eventually timed out, which looked like a hang rather than a
+    # diagnosis. One cheap probe answers the question the rounds cannot.
+    try:
+        pre = probe_desktop([D.CONTROL_DOMAIN])
+    except DesktopUnreachable as exc:
+        log.error("Desktop unreachable: %s", exc)
+        return None, set()
+
+    if not pre["port53_listening"]:
+        log.error("Nothing is listening on %s:53, so there is no point "
+                  "generating traffic.", pre["server"])
+        log.error("The DFP service is not running. Check it with: "
+                  "python3 setup_dfp.py --status")
+        return pre, set()
+
     log.info("Generating traffic for %d domain(s) across %d round(s)",
              len(targets), rounds)
 
