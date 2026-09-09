@@ -29,6 +29,7 @@ import sys
 import time
 from datetime import datetime, timezone
 
+from domains import CONTROL_DOMAIN as D_CONTROL
 from csp_api import (CspAuthError, CspError, CspSession, get_logger, read_state,
                      write_state)
 
@@ -100,15 +101,23 @@ def find_host(csp, ip=None):
     return None
 
 
+# Addresses that appear in host records but identify nothing. A NIOS-X host
+# reports 0.0.0.0 for an interface it has not bound yet, and matching on it
+# would make every host look like every other host.
+PLACEHOLDER_ADDRESSES = {"0.0.0.0", "255.255.255.255", "::", "127.0.0.1"}
+
+
 def _host_addresses(host):
-    """Every IP string anywhere in a host record."""
+    """Every usable IP string anywhere in a host record."""
     found = set()
 
     def walk(node):
         if isinstance(node, dict):
             for key, value in node.items():
                 if key in ("address", "ip_address", "ipv4_address") and isinstance(value, str):
-                    found.add(value.split("/")[0])
+                    addr = value.split("/")[0].strip()
+                    if addr and addr not in PLACEHOLDER_ADDRESSES:
+                        found.add(addr)
                 else:
                     walk(value)
         elif isinstance(node, list):
@@ -358,30 +367,123 @@ def enable_dfp_service(csp, pool_id, name=DFP_SERVICE_NAME):
                    f"{', '.join(DFP_SERVICE_TYPES)}. Last error: {last}")
 
 
+RUNNING_STATES = ("start", "started", "running", "active", "online", "ready")
+
+
+def service_current_state(service):
+    """
+    What the service *is*, never what it was asked to be.
+
+    desired_state is the field we set when creating the service, so reading it
+    back proves only that the POST body arrived. An earlier version fell back
+    to it when current_state was absent, which it always is in the first
+    seconds after creation, so the wait returned instantly on a service that
+    had not begun starting. Returns None when the CSP has not yet said.
+    """
+    for key in ("current_state", "status", "state", "composite_state",
+                "service_status", "operational_state"):
+        value = service.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip().lower()
+    return None
+
+
 def wait_for_service(csp, timeout=600, interval=20):
-    """Block until a DFP service reports itself started."""
+    """
+    Block until the DFP service reports that it has actually started.
+
+    Only current_state counts. If the CSP never publishes one, this gives up
+    quietly rather than guessing, because the DNS check that follows is the
+    authoritative test and will answer the question properly.
+    """
     deadline = time.time() + timeout
     attempt = 0
+    unknown_since = None
 
     while time.time() < deadline:
         attempt += 1
         service = find_dfp_service(csp)
-        if service:
-            state = str(service.get("current_state")
-                        or service.get("desired_state") or "").lower()
-            if state in ("start", "started", "running", "active"):
-                log.info("DFP service is running")
-                return service
-            log.info("DFP service state is %r (attempt %d)...", state or "unknown",
-                     attempt)
-        else:
+
+        if not service:
             log.info("DFP service not visible yet (attempt %d)...", attempt)
+        else:
+            state = service_current_state(service)
+            if state in RUNNING_STATES:
+                log.info("DFP service reports %r", state)
+                return service
+            if state is None:
+                # No current_state at all. Wait a little in case one appears,
+                # then stop pretending this check can tell us anything.
+                unknown_since = unknown_since or time.time()
+                if time.time() - unknown_since > 120:
+                    log.info("The CSP publishes no current_state for this "
+                             "service. Falling through to the DNS check, "
+                             "which is the real test.")
+                    return service
+                log.info("DFP service has no current_state yet (attempt %d)...",
+                         attempt)
+            else:
+                log.info("DFP service state is %r (attempt %d)...", state, attempt)
+
         time.sleep(interval)
 
     log.warning("DFP service did not report running within %ds. It may still "
-                "come up; the traffic check will show whether it resolves.",
-                timeout)
+                "be starting; the DNS check will settle it.", timeout)
     return None
+
+
+def wait_for_dns(timeout=600, interval=20, server=None):
+    """
+    Block until the desktop can actually resolve through the DFP.
+
+    This is the authoritative test and the only one that matters. A service
+    object saying "start" proves the CSP accepted a request; it says nothing
+    about whether anything is listening on port 53. On the run that prompted
+    this, the service was reported as started and port 53 was still dead
+    eleven seconds later.
+
+    Returns True once a real lookup succeeds. Never raises: the caller decides
+    whether a failure here is fatal, and in setup it is not, because the
+    challenge check reports the cause far better than a setup script can.
+    """
+    try:
+        from desktop_dns import DesktopUnreachable, probe_desktop
+    except ImportError:
+        log.warning("desktop_dns is unavailable, skipping the DNS check")
+        return False
+
+    deadline = time.time() + timeout
+    attempt = 0
+    last = None
+
+    while time.time() < deadline:
+        attempt += 1
+        try:
+            probe = probe_desktop([D_CONTROL], server=server)
+        except DesktopUnreachable as exc:
+            last = f"desktop unreachable: {exc}"
+            log.info("Waiting for the desktop (attempt %d): %s", attempt, last)
+            time.sleep(interval)
+            continue
+
+        if not probe["port53_listening"]:
+            last = f"nothing listening on {probe['server']}:53"
+        else:
+            result = probe["results"].get(D_CONTROL, {})
+            if result.get("resolved"):
+                log.info("DFP is resolving: %s -> %s", D_CONTROL,
+                         ", ".join(result["addresses"][:2]))
+                return True
+            last = f"{D_CONTROL}: {result.get('status', 'no answer')}"
+
+        remaining = int(deadline - time.time())
+        log.info("DFP not serving yet (attempt %d, %ds left): %s",
+                 attempt, max(remaining, 0), last)
+        time.sleep(interval)
+
+    log.warning("The DFP was still not resolving after %ds. Last state: %s",
+                timeout, last)
+    return False
 
 
 # --------------------------------------------------------------------------- #
@@ -494,6 +596,12 @@ def main():
                         help=f"Private IP of the NIOS-X host (default {DFP_PRIVATE_IP})")
     parser.add_argument("--timeout", type=int, default=900,
                         help="Seconds to wait for host registration")
+    parser.add_argument("--service-timeout", type=int, default=300,
+                        help="Seconds to wait for the service to report started")
+    parser.add_argument("--dns-timeout", type=int, default=600,
+                        help="Seconds to wait for the DFP to actually resolve")
+    parser.add_argument("--skip-dns-check", action="store_true",
+                        help="Do not wait for the DFP to answer a real query")
     args = parser.parse_args()
 
     csp = CspSession()
@@ -527,19 +635,34 @@ def main():
                   ", ".join(sorted(host)))
         return 1
 
-    log.info("--- 2/4 enabling the DFP service ---")
+    log.info("--- 2/5 enabling the DFP service ---")
     enable_dfp_service(csp, pool_id)
 
-    log.info("--- 3/4 waiting for the service to start ---")
-    wait_for_service(csp)
+    log.info("--- 3/5 waiting for the service to start ---")
+    wait_for_service(csp, timeout=args.service_timeout)
 
-    log.info("--- 4/4 policy scope ---")
+    log.info("--- 4/5 policy scope ---")
     report_policy_scope(csp)
 
+    # The only step that proves anything. Everything above shows the CSP
+    # accepted our configuration; this shows the proxy is actually answering.
+    log.info("--- 5/5 confirming the DFP resolves ---")
+    resolving = True
+    if args.skip_dns_check:
+        log.info("Skipped by request")
+    else:
+        resolving = wait_for_dns(timeout=args.dns_timeout, server=args.ip)
+
     show_status(csp)
-    log.info("DFP ready at %s. Point clients there and Threat Defense will see "
-             "their queries.", args.ip)
-    return 0
+
+    if resolving:
+        log.info("DFP ready at %s and answering queries.", args.ip)
+        return 0
+
+    log.error("The DFP at %s is configured but not answering DNS. The lab "
+              "cannot demonstrate a policy until it does.", args.ip)
+    log.error("Inspect with: python3 setup_dfp.py --status")
+    return 1
 
 
 def _bare(value):

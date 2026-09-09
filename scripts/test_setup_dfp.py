@@ -192,6 +192,68 @@ def test_host_addresses_finds_nested_ips():
     check("1.2.3.4" in found, "_host_addresses finds top-level ip_address")
 
 
+def test_placeholder_addresses_are_ignored():
+    """
+    A NIOS-X host reports 0.0.0.0 for an interface it has not bound yet.
+
+    Keeping it made the status output claim the host's address was 0.0.0.0,
+    and matching on it would make every host look like every other host.
+    """
+    for junk in ("0.0.0.0", "255.255.255.255", "127.0.0.1", "::"):
+        found = setup_dfp._host_addresses({"ip_address": junk})
+        check(found == set(), f"{junk} is not treated as a host address")
+
+    mixed = setup_dfp._host_addresses(
+        {"interfaces": [{"address": "0.0.0.0"}, {"address": "10.100.0.200"}]})
+    check(mixed == {"10.100.0.200"},
+          "a real address survives alongside a placeholder")
+
+
+# --------------------------------------------------------------------------- #
+# Service state
+# --------------------------------------------------------------------------- #
+
+def test_desired_state_is_never_proof_of_running():
+    """
+    The regression. desired_state is what we asked for, not what is.
+
+    wait_for_service() fell back to desired_state when current_state was
+    absent, which it always is in the first seconds after creation. So the
+    wait returned in the same second the service was created, and port 53 was
+    still dead eleven seconds later.
+    """
+    fresh = {"name": "dfp", "service_type": "dfp", "desired_state": "start"}
+    check(setup_dfp.service_current_state(fresh) is None,
+          "a service with only desired_state has no current state")
+
+    check(setup_dfp.service_current_state({}) is None,
+          "an empty service record has no current state")
+
+    check(setup_dfp.service_current_state(
+        {"desired_state": "start", "current_state": ""}) is None,
+        "an empty current_state is not a state")
+
+
+def test_current_state_is_read_from_any_plausible_field():
+    for key in ("current_state", "status", "state", "composite_state",
+                "service_status", "operational_state"):
+        got = setup_dfp.service_current_state({key: "running",
+                                               "desired_state": "start"})
+        check(got == "running", f"current state read from {key}")
+
+    got = setup_dfp.service_current_state({"current_state": "  RUNNING  "})
+    check(got == "running", "current state is normalised")
+
+
+def test_running_states_cover_the_plausible_vocabulary():
+    for value in ("start", "started", "running", "active", "online", "ready"):
+        check(value in setup_dfp.RUNNING_STATES,
+              f"{value!r} counts as running")
+    for value in ("stopped", "starting", "pending", "error"):
+        check(value not in setup_dfp.RUNNING_STATES,
+              f"{value!r} does not count as running")
+
+
 def main():
     print("\nsetup_dfp regression tests\n")
     for name, fn in sorted(globals().items()):
