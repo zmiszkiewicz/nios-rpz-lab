@@ -166,6 +166,19 @@ else
   bad "a module failed to import (see above)"
 fi
 
+# --- 6b. csp_api regression tests -------------------------------------------
+# Offline, no credentials. These pin down the CSP's inconsistent success
+# codes: switch_account() once accepted only HTTP 200 against an endpoint
+# that answers 201, which rejected 23 consecutive successful responses and
+# surfaced as a four-minute propagation timeout in a live lab start.
+step "csp_api tests"
+if TEST_OUT=$( (cd scripts && python3 test_csp_api.py) 2>&1 ); then
+  ok "$(echo "$TEST_OUT" | grep -c '^  ok') assertions passed"
+else
+  bad "csp_api regression tests failed"
+  echo "$TEST_OUT" | grep -E "FAIL|^  -" | sed 's/^/    /'
+fi
+
 # --- 7. Uncommitted work -----------------------------------------------------
 # The track clones this repo from GitHub at run time. A fix that is only on
 # disk does not exist as far as the lab is concerned. This has bitten before.

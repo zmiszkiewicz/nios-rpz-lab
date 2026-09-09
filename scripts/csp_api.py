@@ -48,6 +48,25 @@ DEFAULT_TIMEOUT = 45
 RETRY_STATUSES = {429, 500, 502, 503, 504}
 
 
+def _ok(response):
+    """
+    True for any 2xx.
+
+    The CSP is not consistent about which success code it returns for a given
+    operation: /v2/session/account_switch answers 201, /v2/session/users/sign_in
+    answers 200, and /v2/current_api_keys has been seen to do either. Checking
+    for a specific code is therefore always wrong eventually.
+
+    This cost a live lab start. An earlier version of switch_account() accepted
+    only 200, so it rejected 23 consecutive *successful* 201 responses - each
+    one carrying a perfectly good JWT in its body - and the retry loop around
+    it reported the result as a four-minute propagation timeout. The reference
+    implementations in this organisation all use requests' raise_for_status(),
+    which accepts any 2xx and never had the problem.
+    """
+    return 200 <= response.status_code < 300
+
+
 # --------------------------------------------------------------------------- #
 # Logging
 # --------------------------------------------------------------------------- #
@@ -128,7 +147,7 @@ class CspSession:
             json={"email": self.email, "password": self.password},
             timeout=self.timeout,
         )
-        if r.status_code != 200:
+        if not _ok(r):
             raise CspAuthError(
                 f"CSP rejected the credentials for {self.email} (HTTP {r.status_code})."
             )
@@ -163,7 +182,8 @@ class CspSession:
             json={"id": f"identity/accounts/{account_id}"},
             timeout=self.timeout,
         )
-        if r.status_code != 200:
+        # account_switch answers 201, not 200. Accept any 2xx.
+        if not _ok(r):
             raise CspAuthError(
                 f"Could not switch into account {account_id} (HTTP {r.status_code}): "
                 f"{r.text[:200]}"
@@ -197,7 +217,7 @@ class CspSession:
             json={"name": name, "expires_at": expires_at},
             timeout=self.timeout,
         )
-        if r.status_code not in (200, 201):
+        if not _ok(r):
             raise CspError("POST", "/v2/current_api_keys", r.status_code, r.text)
 
         key = (r.json().get("result") or {}).get("key")

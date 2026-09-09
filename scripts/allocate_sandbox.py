@@ -101,9 +101,12 @@ def allocate():
                 timeout=(5, 30),
             )
 
-            if resp.status_code in (200, 201):
-                # 201 = a sandbox was taken from the pool, 200 = this participant
-                # already had one and the Broker returned it again.
+            # Any 2xx. 201 = a sandbox was taken from the pool, 200 = this
+            # participant already had one and the Broker returned it again.
+            # Matching a specific code here would be the same mistake that
+            # broke csp_api.switch_account(), which accepted only 200 against
+            # an endpoint that answers 201.
+            if 200 <= resp.status_code < 300:
                 log(f"Allocated sandbox (HTTP {resp.status_code})")
                 return resp.json()
 

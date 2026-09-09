@@ -94,10 +94,18 @@ def mark_for_deletion(subtenant_id):
         log(f"WARNING: Network error talking to the Broker: {exc}")
         return False
 
-    if resp.status_code == 200:
-        result = resp.json()
-        log("Marked sandbox for deletion")
-        log(f"   Status: {result.get('status', 'unknown')}")
+    # Any 2xx, not just 200. A mark-for-deletion that answers 202 Accepted is
+    # entirely plausible for an operation a background worker completes, and
+    # checking for one specific code cost this lab a live start elsewhere:
+    # csp_api.switch_account() accepted only 200 against an endpoint that
+    # returns 201 and reported 23 successes as a timeout.
+    if 200 <= resp.status_code < 300:
+        try:
+            status = resp.json().get("status", "unknown")
+        except ValueError:
+            status = "unknown"
+        log(f"Marked sandbox for deletion (HTTP {resp.status_code})")
+        log(f"   Status: {status}")
         log("   Cleanup will run within ~5 minutes")
         return True
 
