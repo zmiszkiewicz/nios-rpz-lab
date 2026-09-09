@@ -53,10 +53,15 @@ log = get_logger("verify_lab")
 
 STRICT = os.getenv("LAB_STRICT_CHECKS", "").strip() in ("1", "true", "yes")
 
-# How many of the five AI applications must show up before challenge 2 passes.
-# Not all five: Application Discovery is a classifier, and one tool being slow
-# to categorise should not block a participant who has clearly generated
-# traffic and can see the report working.
+# How many AI domains must resolve through the DFP before challenge 2 passes.
+#
+# Counted in resolved domains rather than in applications the API lists,
+# because the API returns the application catalogue and applications awaiting
+# review are not in it. Resolution is observable and is the thing Application
+# Discovery is actually built from.
+#
+# Not all of them: one site being slow or briefly unreachable should not block
+# a participant who has plainly generated traffic.
 MIN_DISCOVERED = int(os.getenv("MIN_DISCOVERED_APPS", "3"))
 
 # Policy changes take a little while to reach the DFP.
@@ -144,62 +149,80 @@ def check_baseline():
 
 def check_discovery():
     """
-    Application Discovery has seen the AI tools.
+    The traffic Application Discovery reports on has actually happened.
 
-    The participant's action here is to browse the tools and read a report,
-    which is not directly verifiable. What is verifiable is that the data
-    exists, so that is what this asserts.
+    The participant's task here is to browse the AI tools and read a report.
+    Reading a report is not verifiable, and it must not be faked by asserting
+    on the API, because the two are different surfaces:
+
+      * Application Discovery, under Monitor > Reports > Security, is an
+        analytics report of what was observed. Needs Review applications live
+        there.
+      * The API returns the application catalogue, where an application
+        appears once it has an approval status.
+
+    An application is therefore routinely visible in the report and absent
+    from the API. An earlier version of this check failed in exactly that
+    situation, telling participants to generate more traffic while the report
+    in front of them already showed all five tools.
+
+    So the gate is the precondition that is both observable and genuinely
+    necessary: AI domains resolve through the DFP, which means Threat Defense
+    has queries to classify. What the API knows is logged as information and
+    never fails the challenge.
     """
-    csp = connect_csp()
-    if not csp:
-        fail("Could not authenticate to the Infoblox CSP, so Application "
-             "Discovery cannot be checked. Confirm the lab finished setting up.")
-
-    try:
-        states = AD.ai_application_status(csp)
-    except EndpointNotFound as exc:
-        # The report is a UI surface; if the API is unreachable, fall back to
-        # proving the precondition instead of failing a correct participant.
-        log.warning("%s", exc)
-        if STRICT:
-            fail("The Application Discovery API could not be located. Run "
-                 "python3 discover_td_api.py and update app_discovery.py.")
-        return _discovery_fallback()
-
-    seen = [name for name, app in states.items() if app]
-    if len(seen) < MIN_DISCOVERED:
-        missing = [n for n in D.app_names() if n not in seen]
-        fail(f"Application Discovery has only seen {len(seen)} of the "
-             f"{len(D.app_names())} AI applications ({', '.join(seen) or 'none'}). "
-             f"Still missing: {', '.join(missing)}. Browse them from the desktop, "
-             f"or run: python3 generate_ai_traffic.py --rounds 3")
-
-    log.info("Application Discovery has seen %d application(s): %s",
-             len(seen), ", ".join(seen))
-    return True
-
-
-def _discovery_fallback():
-    """
-    Prove the traffic that feeds the report actually happened.
-
-    Weaker than reading the report, and it says so in the log rather than
-    quietly pretending the check was equivalent.
-    """
-    log.warning("Falling back to verifying that AI traffic resolves from the "
-                "desktop. This does not prove the report is populated.")
     result = probe(D.primary_domains() + [D.CONTROL_DOMAIN])
     require_resolution_works(result)
 
     resolved = [d for d, r in result["results"].items()
                 if r["resolved"] and D.entry_for_domain(d)]
+
     if len(resolved) < MIN_DISCOVERED:
-        fail(f"Only {len(resolved)} AI domain(s) resolve from the desktop, so "
-             f"Application Discovery has little to work with. Run: "
+        names = sorted({D.entry_for_domain(d)["app"] for d in resolved})
+        fail(f"Only {len(resolved)} AI domain(s) resolve from the desktop "
+             f"({', '.join(names) or 'none'}), so Threat Defense has little to "
+             f"classify. Browse the tools from the desktop, or run: "
              f"python3 generate_ai_traffic.py --rounds 3")
 
-    log.info("%d AI domain(s) resolve from the desktop", len(resolved))
+    apps = sorted({D.entry_for_domain(d)["app"] for d in resolved})
+    log.info("%d AI domain(s) resolve through the DFP, covering: %s",
+             len(resolved), ", ".join(apps))
+    log.info("Threat Defense has the queries it needs. The Application "
+             "Discovery report is the authoritative view of what it made of "
+             "them: Monitor > Reports > Security > Application Discovery")
+
+    _report_catalogue_state()
     return True
+
+
+def _report_catalogue_state():
+    """
+    Log whatever the API can add. Never fails the check.
+
+    Purely informational: absence from the catalogue is expected while
+    applications are awaiting review, so it cannot be evidence of anything.
+    """
+    csp = connect_csp()
+    if not csp:
+        return
+
+    try:
+        states = AD.ai_application_status(csp)
+    except EndpointNotFound:
+        log.info("The application catalogue API is not reachable on this "
+                 "tenant, which does not affect this challenge.")
+        return
+    except (CspError, CspAuthError) as exc:
+        log.info("Could not read the application catalogue: %s", exc)
+        return
+
+    classified = {n: a["status"] for n, a in states.items() if a}
+    if classified:
+        log.info("Applications already carrying a status: %s",
+                 ", ".join(f"{n}={s}" for n, s in sorted(classified.items())))
+    else:
+        log.info("No application has an approval status yet, which is the "
+                 "expected starting point: everything begins as Needs Review.")
 
 
 # --------------------------------------------------------------------------- #
@@ -233,20 +256,19 @@ def check_classify(approved_app=D.DEFAULT_APPROVED_APP):
 
     approved = [n for n, a in states.items() if a and a["status"] == AD.APPROVED]
     unapproved = [n for n, a in states.items() if a and a["status"] == AD.UNAPPROVED]
-    unreviewed = [n for n, a in states.items()
-                  if a and a["status"] in (AD.NEEDS_REVIEW, "unknown")]
-    unseen = [n for n, a in states.items() if not a]
+    pending = [n for n, a in states.items()
+               if not a or a["status"] in (AD.NEEDS_REVIEW, "unknown")]
 
-    if unseen:
-        fail(f"{', '.join(unseen)} has not been discovered yet, so it cannot be "
-             f"classified. Generate more traffic and wait a moment: "
-             f"python3 generate_ai_traffic.py --rounds 3")
+    # Deliberately no check that every application is visible in the catalogue.
+    # Applications awaiting review are not in it, so their absence means
+    # "not classified yet" - which the checks below already say, in terms the
+    # participant can act on - and never "not discovered".
 
     if not approved:
         fail(f"No AI application is marked Approved. The policy needs one "
-             f"sanctioned tool, or the Allow rule has nothing to match. Mark "
-             f"one (the lab suggests {approved_app}) as Approved under Security "
-             f"> Threat Defense > Application Discovery.")
+             f"sanctioned tool or the Allow rule has nothing to match. Open "
+             f"Application Discovery, select one (the lab suggests "
+             f"{approved_app}) and use Change Status > Approved.")
 
     if len(approved) > 1:
         fail(f"{len(approved)} applications are marked Approved "
@@ -254,12 +276,15 @@ def check_classify(approved_app=D.DEFAULT_APPROVED_APP):
              f"mark the others Unapproved.")
 
     if len(unapproved) < 2:
+        still = ", ".join(pending) or "the remaining tools"
         fail(f"Only {len(unapproved)} application(s) are marked Unapproved "
-             f"({', '.join(unapproved) or 'none'}). Mark the remaining tools "
-             f"Unapproved: {', '.join(unreviewed)}.")
+             f"({', '.join(unapproved) or 'none'}). Mark the rest Unapproved "
+             f"in Application Discovery: {still}.")
 
     log.info("Approved: %s", ", ".join(approved))
     log.info("Unapproved: %s", ", ".join(unapproved))
+    if pending:
+        log.info("Still unclassified, which is allowed: %s", ", ".join(pending))
     return True
 
 

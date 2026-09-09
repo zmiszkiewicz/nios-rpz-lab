@@ -260,31 +260,64 @@ def apply_lab_policy(csp, approved_app=D.DEFAULT_APPROVED_APP):
 # --------------------------------------------------------------------------- #
 
 def show_status(csp, approved_app=D.DEFAULT_APPROVED_APP):
-    """Print the AI applications, their approval state, and the target state."""
-    want_approved, want_unapproved = D.expected_split(approved_app)
+    """
+    Print what the API can say about the AI applications.
+
+    Careful about what this does and does not mean. The portal has two
+    different surfaces for applications:
+
+      * Application Discovery, under Monitor > Reports > Security. An
+        analytics report of what has been observed on the network. This is
+        where an application sits while it is Needs Review, and it is the
+        authoritative answer to "is this being used here".
+      * The application catalogue, which is what this API returns. An
+        application appears here with a status once it has one.
+
+    An application can therefore be plainly visible in the report and absent
+    from this output. That is normal and is not a problem to fix. An earlier
+    version of this printed "NOT SEEN" against such applications and told the
+    participant to generate more traffic, which sent people chasing a
+    non-problem while the report in front of them already showed the data.
+
+    So this reports approval state, which the API does know, and defers to the
+    portal for discovery, which it does not.
+    """
+    want_approved, _ = D.expected_split(approved_app)
     states = ai_application_status(csp)
 
     print()
-    print("=" * 72)
-    print(f"  AI application status - {read_state('sandbox_name.txt', 'tenant')}")
-    print("=" * 72)
-    print(f"  {'APPLICATION':<22} {'DISCOVERED':<12} {'STATUS':<14} TARGET")
-    print("  " + "-" * 68)
+    print("=" * 74)
+    print(f"  AI application approval - {read_state('sandbox_name.txt', 'tenant')}")
+    print("=" * 74)
+    print(f"  {'APPLICATION':<22} {'STATUS':<20} TARGET")
+    print("  " + "-" * 70)
 
     for name in D.app_names():
         app = states.get(name)
         want = APPROVED if name == want_approved else UNAPPROVED
-        seen = "yes" if app else "NOT SEEN"
-        status = app["status"] if app else "-"
-        flag = "" if (app and app["status"] == want) else "  <-- todo"
-        print(f"  {name:<22} {seen:<12} {status:<14} {want}{flag}")
+        if not app:
+            status = "not classified yet"
+        else:
+            status = app["status"]
+        flag = "" if (app and app["status"] == want) else "  <-- to do"
+        print(f"  {name:<22} {status:<20} {want}{flag}")
 
-    missing = [n for n, a in states.items() if not a]
-    print("=" * 72)
-    if missing:
-        print(f"  {len(missing)} application(s) not discovered yet. Generate "
-              f"traffic and wait:")
-        print("    python3 generate_ai_traffic.py")
+    print("=" * 74)
+
+    unclassified = [n for n, a in states.items() if not a]
+    if unclassified:
+        print(f"  {len(unclassified)} application(s) have no approval status yet.")
+        print()
+        print("  This does NOT mean they have not been discovered. Applications")
+        print("  awaiting review live in the Application Discovery report and")
+        print("  only appear here once you classify them. Check the report:")
+        print("    Monitor > Reports > Security > Application Discovery")
+        print()
+        print("  If the report genuinely has no AI applications in it, then")
+        print("  there is no traffic to classify, and that is worth fixing:")
+        print("    python3 generate_ai_traffic.py --rounds 3")
+    else:
+        print("  Every AI application has an approval status.")
     print()
     return states
 
@@ -343,11 +376,15 @@ def main():
 
     if args.command == "list":
         apps = list_applications(csp)
-        print(f"\n{len(apps)} application(s) discovered\n")
+        print(f"\n{len(apps)} application(s) in the catalogue\n")
         for app in sorted(apps, key=lambda a: a["name"].lower()):
             ours = " *" if D.entry_for_app(app["name"]) else ""
             print(f"  {app['name']:<34} {app['status']:<14}{app['category']}{ours}")
-        print("\n  * an application this lab governs\n")
+        print("\n  * an application this lab governs")
+        print("\n  This is the application catalogue, not the Application")
+        print("  Discovery report. Applications awaiting review may not be")
+        print("  listed here yet. The report is the authoritative view:")
+        print("    Monitor > Reports > Security > Application Discovery\n")
         return 0
 
     if args.command == "status":
