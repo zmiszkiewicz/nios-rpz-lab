@@ -125,8 +125,8 @@ try {
     $links = @(
         @{ Name = "Claude";          Url = "https://claude.ai" },
         @{ Name = "ChatGPT";         Url = "https://chatgpt.com" },
+        @{ Name = "OpenAI";          Url = "https://openai.com" },
         @{ Name = "Gemini";          Url = "https://gemini.google.com" },
-        @{ Name = "Copilot";         Url = "https://copilot.microsoft.com" },
         @{ Name = "Perplexity";      Url = "https://perplexity.ai" },
         @{ Name = "Infoblox Portal"; Url = "${portal_url}" }
     )

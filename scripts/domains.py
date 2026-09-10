@@ -27,18 +27,38 @@ matches one spelling breaks silently when it changes again.
 # --------------------------------------------------------------------------- #
 # The AI applications on the company's list
 # --------------------------------------------------------------------------- #
-# These are the five tools named in the workshop brief. The participant marks
-# one Approved and the rest Unapproved, so the set has to be small enough to
-# click through in the portal without tedium and varied enough that the
-# approved/unapproved split is a real decision.
+# Five tools, one approved and four unapproved, so the split is a real
+# decision and not a formality.
+#
+# Microsoft Copilot was removed. It shares a detection surface with Windows
+# Defender on the desktop, and the conflict between the two produced
+# unreliable results in the classify and enforce challenges, so it was
+# dropped rather than fought.
+#
+# ChatGPT and OpenAI are listed as two separate applications on purpose, not
+# merged. Threat Defense discovers them separately, because chatgpt.com and
+# openai.com are different applications to it even though they share a
+# vendor, and a participant who only classifies ChatGPT leaves OpenAI sitting
+# in Needs Review with no policy covering it. The scenario approves the
+# product the business actually sanctioned, ChatGPT, and leaves the vendor's
+# other domain, OpenAI, unapproved like everything else. That is worth
+# teaching in itself: approving a product does not approve the rest of its
+# vendor's estate.
 
 AI_APPLICATIONS = [
     {
         "app": "ChatGPT",
         "domain": "chatgpt.com",
         "vendor": "OpenAI",
-        "aliases": ["Chat GPT", "OpenAI ChatGPT", "openai.com", "OpenAI"],
-        "extra_domains": ["chat.openai.com", "openai.com"],
+        "aliases": ["Chat GPT"],
+        "extra_domains": ["chat.openai.com"],
+    },
+    {
+        "app": "OpenAI",
+        "domain": "openai.com",
+        "vendor": "OpenAI",
+        "aliases": ["OpenAI.com"],
+        "extra_domains": [],
     },
     {
         "app": "Claude",
@@ -55,13 +75,6 @@ AI_APPLICATIONS = [
         "extra_domains": ["bard.google.com"],
     },
     {
-        "app": "Microsoft Copilot",
-        "domain": "copilot.microsoft.com",
-        "vendor": "Microsoft",
-        "aliases": ["Copilot", "Bing Chat", "Microsoft Bing Chat"],
-        "extra_domains": [],
-    },
-    {
         "app": "Perplexity",
         "domain": "perplexity.ai",
         "vendor": "Perplexity AI",
@@ -71,7 +84,8 @@ AI_APPLICATIONS = [
 ]
 
 # The application the narrative standardises on. The business picked one
-# assistant; this is it. Everything else becomes Unapproved.
+# assistant, and this is it. Everything else, including OpenAI, becomes
+# Unapproved.
 DEFAULT_APPROVED_APP = "ChatGPT"
 
 
