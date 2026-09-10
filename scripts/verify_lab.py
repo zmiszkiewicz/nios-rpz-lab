@@ -229,18 +229,22 @@ def _report_catalogue_state():
 # Stage 3 - classify
 # --------------------------------------------------------------------------- #
 
-def check_classify(approved_app=D.DEFAULT_APPROVED_APP):
+def check_classify(approved_apps=D.DEFAULT_APPROVED_APPS):
     """
     The AI applications have been split into Approved and Unapproved.
 
-    Requires exactly one approved application and at least two unapproved.
-    Insisting on all four unapproved would fail someone who reasonably decided
-    two tools were acceptable, and the lesson survives either way.
+    Requires exactly the target set of applications Approved (ChatGPT and
+    OpenAI, since ChatGPT depends on OpenAI's domain to function) and at
+    least two applications Unapproved. It does not require every non-approved
+    application to be Unapproved: leaving one or two in Needs Review should
+    not fail someone who plainly did the exercise.
     """
     csp = connect_csp()
     if not csp:
         fail("Could not authenticate to the Infoblox CSP, so the classification "
              "cannot be checked.")
+
+    want_approved, _ = D.expected_split(approved_apps)
 
     try:
         states = AD.ai_application_status(csp)
@@ -264,16 +268,21 @@ def check_classify(approved_app=D.DEFAULT_APPROVED_APP):
     # "not classified yet" - which the checks below already say, in terms the
     # participant can act on - and never "not discovered".
 
-    if not approved:
-        fail(f"No AI application is marked Approved. The policy needs one "
-             f"sanctioned tool or the Allow rule has nothing to match. Open "
-             f"Application Discovery, select one (the lab suggests "
-             f"{approved_app}) and use Change Status > Approved.")
+    missing = [n for n in want_approved if n not in approved]
+    if missing:
+        fail(f"{', '.join(missing)} still need"
+             f"{'s' if len(missing) == 1 else ''} to be marked Approved. "
+             f"ChatGPT and OpenAI both need Approved status: ChatGPT is the "
+             f"sanctioned assistant, and OpenAI is approved alongside it "
+             f"because ChatGPT depends on openai.com to work. Classify "
+             f"{'it' if len(missing) == 1 else 'them'} in Application "
+             f"Discovery, then use Change Status > Approved.")
 
-    if len(approved) > 1:
-        fail(f"{len(approved)} applications are marked Approved "
-             f"({', '.join(approved)}). The scenario sanctions exactly one, so "
-             f"mark the others Unapproved.")
+    extra = [n for n in approved if n not in want_approved]
+    if extra:
+        fail(f"{', '.join(extra)} {'is' if len(extra) == 1 else 'are'} marked "
+             f"Approved but should not be. Only ChatGPT and OpenAI are "
+             f"sanctioned here, mark the rest Unapproved.")
 
     if len(unapproved) < 2:
         still = ", ".join(pending) or "the remaining tools"
@@ -294,35 +303,41 @@ def check_classify(approved_app=D.DEFAULT_APPROVED_APP):
 
 def check_enforce():
     """
-    The policy is enforcing: unapproved tools fail, the approved one works.
+    The policy is enforcing: unapproved tools fail, the approved ones work.
+
+    "The approved ones", plural: ChatGPT and OpenAI are both meant to be
+    Approved, since ChatGPT depends on openai.com to function. Every approved
+    domain has to resolve, not just one of them, or the check would pass on a
+    state where the tool the business actually sanctioned is broken.
 
     This is the check that matters, and it is deliberately grounded in DNS
     answers from the desktop rather than in the policy object. A policy with
     perfect rules that has not reached the DFP has not done anything.
     """
     csp = connect_csp()
-    approved_name = None
+    approved_names = []
     unapproved_names = []
 
     # Use the participant's actual classification where we can read it, so the
     # check follows their decision rather than assuming they picked the
-    # suggested tool.
+    # suggested tools.
     if csp:
         try:
             states = AD.ai_application_status(csp)
-            approved_name = next((n for n, a in states.items()
-                                  if a and a["status"] == AD.APPROVED), None)
+            approved_names = [n for n, a in states.items()
+                              if a and a["status"] == AD.APPROVED]
             unapproved_names = [n for n, a in states.items()
                                 if a and a["status"] == AD.UNAPPROVED]
         except EndpointNotFound:
             pass
 
-    if not approved_name:
-        approved_name, unapproved_names = D.expected_split()
+    if not approved_names:
+        approved_names, unapproved_names = D.expected_split()
         log.info("Could not read the classification, assuming the suggested "
-                 "split (approved: %s)", approved_name)
+                 "split (approved: %s)", ", ".join(approved_names))
 
-    approved_domains = D.domains_for_app(approved_name, include_extra=False)
+    approved_domains = [d for n in approved_names
+                        for d in D.domains_for_app(n, include_extra=False)]
     unapproved_domains = [d for n in unapproved_names
                           for d in D.domains_for_app(n, include_extra=False)]
 
@@ -365,9 +380,13 @@ def check_enforce():
                  len(still_resolving), attempt)
         time.sleep(ENFORCE_INTERVAL)
 
-    # --- the approved tool must still work ---------------------------------
-    approved_ok = any(result["results"].get(d, {}).get("resolved")
-                      for d in approved_domains) if approved_domains else True
+    # --- every approved domain must still work ------------------------------
+    # all(), not any(): ChatGPT depends on openai.com to function, so if
+    # OpenAI is blocked while ChatGPT is allowed, ChatGPT is broken in
+    # practice even though its own domain resolves. Both have to work.
+    approved_failing = [d for d in approved_domains
+                        if not result["results"].get(d, {}).get("resolved")]
+    approved_ok = not approved_failing
 
     if still_resolving:
         detail = ", ".join(still_resolving[:3])
@@ -378,11 +397,17 @@ def check_enforce():
         fail(f"{detail} still resolves from the desktop after "
              f"{ENFORCE_TIMEOUT}s, so unapproved AI tools are not blocked.{hint}")
 
-    if not approved_ok:
-        fail(f"Every AI tool is blocked, including {approved_name}, which you "
-             f"marked Approved. The Allow rule is missing or sits below the "
-             f"Block rule - Threat Defense stops at the first match, so "
-             f"Blocked must come before Allowed.")
+    if approved_failing:
+        detail = ", ".join(approved_failing)
+        if len(approved_failing) == len(approved_domains):
+            fail(f"Every AI tool is blocked, including {', '.join(approved_names)}, "
+                 f"which you marked Approved. The Allow rule is missing or sits "
+                 f"below the Block rule - Threat Defense stops at the first "
+                 f"match, so Blocked must come before Allowed.")
+        fail(f"{detail} is blocked, but it belongs to an application you "
+             f"marked Approved ({', '.join(approved_names)}). If OpenAI is "
+             f"blocked while ChatGPT is allowed, ChatGPT breaks in practice: "
+             f"they need to be approved together, not just ChatGPT alone.")
 
     log.info("Blocked: %s", ", ".join(unapproved_domains))
     log.info("Allowed: %s", ", ".join(approved_domains) or "(none configured)")

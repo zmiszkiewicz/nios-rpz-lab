@@ -179,13 +179,18 @@ fi
 #   test_desktop_dns  a ten-domain run against a DFP that was not serving
 #                     outlived the WinRM timeout, because each lookup waited
 #                     out its own retry schedule. Looked like a hang.
+#   test_domains      approving only ChatGPT would enforce a policy that
+#                     breaks ChatGPT, because it depends on openai.com for
+#                     auth and API traffic. expected_split() moved from one
+#                     approved name to a list, and every caller had to move
+#                     with it or silently read only the first one.
 #
 # The common thread is asserting a specific value, or an unbounded wait,
 # against a system whose real behaviour was never confirmed. These tests pin
 # down what was learned. The desktop suite also checks the PowerShell renders
 # and balances, because it cannot be executed on the machine that writes it.
 step "regression tests"
-for suite in test_csp_api test_setup_dfp test_desktop_dns; do
+for suite in test_csp_api test_setup_dfp test_desktop_dns test_domains; do
   if TEST_OUT=$( (cd scripts && python3 "${suite}.py") 2>&1 ); then
     ok "${suite}: $(echo "$TEST_OUT" | grep -c '^  ok') assertions passed"
   else

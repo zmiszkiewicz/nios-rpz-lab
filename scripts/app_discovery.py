@@ -234,16 +234,17 @@ def set_status(csp, app_name, status):
                    f"Defense > Application Discovery.")
 
 
-def apply_lab_policy(csp, approved_app=D.DEFAULT_APPROVED_APP):
-    """Approve the sanctioned tool, unapprove the rest. Returns a change count."""
-    approved, unapproved = D.expected_split(approved_app)
+def apply_lab_policy(csp, approved_apps=D.DEFAULT_APPROVED_APPS):
+    """Approve the sanctioned tools, unapprove the rest. Returns a change count."""
+    approved, unapproved = D.expected_split(approved_apps)
     changed = 0
 
-    try:
-        if set_status(csp, approved, APPROVED):
-            changed += 1
-    except CspError as exc:
-        log.warning("%s", exc)
+    for name in approved:
+        try:
+            if set_status(csp, name, APPROVED):
+                changed += 1
+        except CspError as exc:
+            log.warning("%s", exc)
 
     for name in unapproved:
         try:
@@ -259,7 +260,7 @@ def apply_lab_policy(csp, approved_app=D.DEFAULT_APPROVED_APP):
 # Reporting
 # --------------------------------------------------------------------------- #
 
-def show_status(csp, approved_app=D.DEFAULT_APPROVED_APP):
+def show_status(csp, approved_apps=D.DEFAULT_APPROVED_APPS):
     """
     Print what the API can say about the AI applications.
 
@@ -282,7 +283,7 @@ def show_status(csp, approved_app=D.DEFAULT_APPROVED_APP):
     So this reports approval state, which the API does know, and defers to the
     portal for discovery, which it does not.
     """
-    want_approved, _ = D.expected_split(approved_app)
+    want_approved, _ = D.expected_split(approved_apps)
     states = ai_application_status(csp)
 
     print()
@@ -294,7 +295,7 @@ def show_status(csp, approved_app=D.DEFAULT_APPROVED_APP):
 
     for name in D.app_names():
         app = states.get(name)
-        want = APPROVED if name == want_approved else UNAPPROVED
+        want = APPROVED if name in want_approved else UNAPPROVED
         if not app:
             status = "not classified yet"
         else:
@@ -362,8 +363,9 @@ def connect():
 def main():
     parser = argparse.ArgumentParser(
         description="Inspect and set Threat Defense application approval.")
-    parser.add_argument("--approved-app", default=D.DEFAULT_APPROVED_APP,
-                        help=f"The sanctioned tool (default {D.DEFAULT_APPROVED_APP})")
+    parser.add_argument("--approved-app", action="append", dest="approved_apps",
+                        help="A sanctioned tool. Repeatable. Default: "
+                             f"{', '.join(D.DEFAULT_APPROVED_APPS)}")
     sub = parser.add_subparsers(dest="command", required=True)
     for name in ("list", "status", "filters", "apply-policy"):
         sub.add_parser(name)
@@ -373,6 +375,7 @@ def main():
     args = parser.parse_args()
 
     csp = connect()
+    approved_apps = args.approved_apps or D.DEFAULT_APPROVED_APPS
 
     if args.command == "list":
         apps = list_applications(csp)
@@ -388,7 +391,7 @@ def main():
         return 0
 
     if args.command == "status":
-        show_status(csp, args.approved_app)
+        show_status(csp, approved_apps)
         return 0
 
     if args.command == "filters":
@@ -396,7 +399,7 @@ def main():
         return 0
 
     if args.command == "apply-policy":
-        changed = apply_lab_policy(csp, args.approved_app)
+        changed = apply_lab_policy(csp, approved_apps)
         log.info("Done - %d application(s) reclassified", changed)
         return 0
 

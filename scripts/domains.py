@@ -39,11 +39,17 @@ matches one spelling breaks silently when it changes again.
 # merged. Threat Defense discovers them separately, because chatgpt.com and
 # openai.com are different applications to it even though they share a
 # vendor, and a participant who only classifies ChatGPT leaves OpenAI sitting
-# in Needs Review with no policy covering it. The scenario approves the
-# product the business actually sanctioned, ChatGPT, and leaves the vendor's
-# other domain, OpenAI, unapproved like everything else. That is worth
-# teaching in itself: approving a product does not approve the rest of its
-# vendor's estate.
+# in Needs Review with no policy covering it.
+#
+# Both are Approved, not just ChatGPT. ChatGPT's own product depends on
+# openai.com: the browser calls back to it for authentication, billing and
+# parts of the API surface while ChatGPT is open. Approving ChatGPT and
+# leaving OpenAI blocked breaks the very tool the business sanctioned, which
+# is the opposite of what the policy is supposed to do. That is worth
+# teaching in itself, and it cuts the other way from the obvious lesson:
+# a vendor's other domains are not automatically approved just because one
+# product is, but they are not automatically unapproved either. Each one gets
+# checked against what the approved tool actually needs to function.
 
 AI_APPLICATIONS = [
     {
@@ -83,10 +89,10 @@ AI_APPLICATIONS = [
     },
 ]
 
-# The application the narrative standardises on. The business picked one
-# assistant, and this is it. Everything else, including OpenAI, becomes
-# Unapproved.
-DEFAULT_APPROVED_APP = "ChatGPT"
+# The applications the narrative approves. ChatGPT is the assistant the
+# business picked; OpenAI rides along because ChatGPT depends on it. Everyone
+# else on the list becomes Unapproved.
+DEFAULT_APPROVED_APPS = ["ChatGPT", "OpenAI"]
 
 
 # --------------------------------------------------------------------------- #
@@ -165,16 +171,31 @@ def domains_for_app(name, include_extra=True):
     return domains
 
 
-def expected_split(approved_app=DEFAULT_APPROVED_APP):
+def expected_split(approved_apps=None):
     """
-    (approved, unapproved) application names for the target end state.
+    (approved, unapproved) application name lists for the target end state.
+
+    Both sides are lists, because more than one application can be Approved:
+    ChatGPT and OpenAI both need to be, since ChatGPT depends on OpenAI's
+    domain to function. A single name is also accepted, for callers that only
+    ever cared about one application.
 
     The checks use this rather than recomputing the split in three places and
     getting it subtly different in one of them.
     """
-    entry = entry_for_app(approved_app)
-    approved = entry["app"] if entry else approved_app
-    unapproved = [e["app"] for e in AI_APPLICATIONS if e["app"] != approved]
+    if approved_apps is None:
+        approved_apps = DEFAULT_APPROVED_APPS
+    if isinstance(approved_apps, str):
+        approved_apps = [approved_apps]
+
+    approved = []
+    for name in approved_apps:
+        entry = entry_for_app(name)
+        canonical = entry["app"] if entry else name
+        if canonical not in approved:
+            approved.append(canonical)
+
+    unapproved = [e["app"] for e in AI_APPLICATIONS if e["app"] not in approved]
     return approved, unapproved
 
 
